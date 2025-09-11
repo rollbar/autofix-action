@@ -1,0 +1,328 @@
+name: Rollbar Autofix
+description: Automatically opens PRs to fix Rollbar errors.
+author: Rollbar
+branding:
+  icon: zap
+  color: blue
+
+inputs:
+  openai_api_key:
+    description: API key for Codex
+    required: true
+  rollbar_access_token:
+    description: Rollbar project access token (read/write) for MCP tools
+    required: true
+  github_token:
+    description: Token for opening GitHub PR. Use a PAT to enable running workflows. Or leave blank to use GITHUB_TOKEN.
+    required: false
+    default: ''
+  item_counter:
+    description: Rollbar item counter (e.g., 123456)
+    required: true
+  environment:
+    description: Rollbar environment (e.g., staging, production)
+    required: false
+    default: unknown
+  language:
+    description: Project language hint (e.g. node|python|go|java)
+    required: false
+    default: unknown
+  test_command:
+    description: Command to execute tests
+    required: false
+    default: ''
+  lint_command:
+    description: Command to execute lints
+    required: false
+    default: ''
+  max_iterations:
+    description: Max fix iterations
+    required: false
+    default: '1'
+  pr_base:
+    description: Base branch for PR to be create
+    required: false
+    default: 'main'
+
+outputs:
+  summary:
+    description: Markdown summary of what the agent did
+    value: ${{ steps.summarize.outputs.summary }}
+  branch_name:
+    description: Suggested branch name for the PR
+    value: ${{ steps.summarize.outputs.branch_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+        check-latest: true
+
+    - name: Install Codex CLI and Rollbar MCP
+      shell: bash
+      run: |
+        npm i -g @openai/codex@0.31.0
+        npm i -g @rollbar/mcp-server
+
+    - name: Write Codex config
+      shell: bash
+      env:
+        ROLLBAR_ACCESS_TOKEN: ${{ inputs.rollbar_access_token }}
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.codex
+
+        # Write the static portion of config.toml without a heredoc
+        printf '%s\n' \
+          '[profiles.ci]' \
+          'approval-policy = "never"' \
+          'sandbox_mode = "workspace-write"' \
+          'model = "gpt-5"' \
+          'cd = "."' \
+          '' \
+          '[mcp_servers.rollbar]' \
+          'command = "npx"' \
+          'args = ["-y", "@rollbar/mcp-server"]' \
+          > ~/.codex/config.toml
+
+        # Append the env table with the secret
+        {
+          echo
+          echo '[mcp_servers.rollbar.env]'
+          printf 'ROLLBAR_ACCESS_TOKEN = "%s"\n' "$ROLLBAR_ACCESS_TOKEN"
+        } >> ~/.codex/config.toml
+
+        # Optional: show config with secret redacted
+        sed -e 's/ROLLBAR_ACCESS_TOKEN = ".*"/ROLLBAR_ACCESS_TOKEN = "***"/' ~/.codex/config.toml
+
+        # Mark the GH workspace as trusted so Codex can auto-apply diffs here
+        # (path is the absolute checkout path in Actions)
+        {
+          echo
+          echo "[projects.\"$GITHUB_WORKSPACE\"]"
+          echo "trust_level = \"trusted\""
+        } >> ~/.codex/config.toml
+
+    - name: Prepare prompt and template
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Resolve prompt template (host override first, then default in action)
+        PROMPT_SRC=".github/rollbar-autofix/prompt.md"
+        if [ ! -f "$PROMPT_SRC" ]; then
+          PROMPT_SRC="$GITHUB_ACTION_PATH/templates/prompt.md"
+        fi
+
+        # Resolve PR template (host override first, then default in action)
+        PR_TEMPLATE_SRC=".github/rollbar-autofix/pr-template.md"
+        if [ ! -f "$PR_TEMPLATE_SRC" ]; then
+          PR_TEMPLATE_SRC="$GITHUB_ACTION_PATH/templates/pr-template.md"
+        fi
+
+        # Basic, portable template rendering using sed token replacement
+        esc() { printf '%s' "$1" | sed -e 's/[\\&/]/\\&/g'; }
+
+        sed \
+          -e "s/{{ITEM_COUNTER}}/$(esc "${{ inputs.item_counter }}")/g" \
+          -e "s/{{ENVIRONMENT}}/$(esc "${{ inputs.environment }}")/g" \
+          -e "s/{{LANGUAGE}}/$(esc "${{ inputs.language }}")/g" \
+          -e "s/{{TEST_COMMAND}}/$(esc "${{ inputs.test_command }}")/g" \
+          -e "s/{{LINT_COMMAND}}/$(esc "${{ inputs.lint_command }}")/g" \
+          -e "s/{{MAX_ITERATIONS}}/$(esc "${{ inputs.max_iterations }}")/g" \
+          "$PROMPT_SRC" > .autofix_task.md
+
+      # Export PR template path for later summarize step
+    - name: Export PR template path
+      shell: bash
+      run: |
+        set -euo pipefail
+        PR_TEMPLATE_SRC=".github/rollbar-autofix/pr-template.md"
+        if [ ! -f "$PR_TEMPLATE_SRC" ]; then
+          PR_TEMPLATE_SRC="$GITHUB_ACTION_PATH/templates/pr-template.md"
+        fi
+        echo "PR_TEMPLATE_SRC=$PR_TEMPLATE_SRC" >> "$GITHUB_ENV"
+
+    - name: Run Codex AutoFix
+      id: codex_exec
+      shell: bash
+      env:
+        OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+        TASK_FILE: .autofix_task.md
+        CI: '1'
+        TERM: dumb
+      run: |
+        set -euo pipefail
+        set +e
+        codex exec \
+          --profile=ci \
+          --sandbox workspace-write \
+          -C "$GITHUB_WORKSPACE" \
+          --model gpt-5 \
+          --config 'model_reasoning_effort=high' \
+          -- "$(cat "$TASK_FILE")" \
+          2>&1 | tee codex_exec.log
+        EXEC_RC=${PIPESTATUS[0]}
+        set -e
+        echo "+ codex exec exit code: $EXEC_RC"
+
+        # Extract the last delimited Issue Description block (content-only)
+        : > _issue_description.md
+        awk '
+          /^[[:space:]]*=== ISSUE DESCRIPTION START ===[[:space:]]*$/ { inblk=1; buf=""; next }
+          /^[[:space:]]*=== ISSUE DESCRIPTION END ===[[:space:]]*$/   { if (inblk) { last=buf } inblk=0; next }
+          { if (inblk) { buf = buf $0 ORS } }
+          END { if (last) { printf "%s", last } }
+        ' codex_exec.log > _issue_description.md || true
+        # Remove a leading internal heading if present, and trim trailing whitespace
+        if [ -s _issue_description.md ]; then
+          awk 'NR==1 && $0 ~ /^### Issue Description/ { next } { print }' _issue_description.md \
+            | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' > _issue_description.clean.md || true
+          mv _issue_description.clean.md _issue_description.md || true
+          echo "Extracted issue description section."
+        else
+          echo "No delimited issue description found in codex output."
+        fi
+
+        # If Codex failed, fail the step (and workflow)
+        if [ "$EXEC_RC" -ne 0 ]; then
+          echo "::error::codex exec failed with exit code $EXEC_RC. See codex_exec.log for details."
+          exit "$EXEC_RC"
+        fi
+
+    - name: Summarize
+      id: summarize
+      shell: bash
+      run: |
+        set -euo pipefail
+        branch_name="autofix/rollbar-item-${{ inputs.item_counter }}-${{ github.run_id }}"
+
+        # Render PR body from template with placeholders + injected issue description
+        : > _autofix_summary.md
+        ISSUE_DESC=""
+        if [ -s _issue_description.md ]; then
+          ISSUE_DESC=$(cat _issue_description.md)
+        fi
+
+        esc() { printf '%s' "$1" | sed -e 's/[\\&/]/\\&/g'; }
+        sed \
+          -e "s/{{ISSUE_DESCRIPTION}}/$(esc "$ISSUE_DESC")/g" \
+          -e "s/{{ITEM_COUNTER}}/$(esc "${{ inputs.item_counter }}")/g" \
+          -e "s/{{ENVIRONMENT}}/$(esc "${{ inputs.environment }}")/g" \
+          -e "s/{{LANGUAGE}}/$(esc "${{ inputs.language }}")/g" \
+          -e "s/{{TEST_COMMAND}}/$(esc "${{ inputs.test_command }}")/g" \
+          -e "s/{{LINT_COMMAND}}/$(esc "${{ inputs.lint_command }}")/g" \
+          -e "s/{{MAX_ITERATIONS}}/$(esc "${{ inputs.max_iterations }}")/g" \
+          "$PR_TEMPLATE_SRC" > _autofix_summary.md
+
+        # If no issue description was found, drop the header and extra blank line
+        if [ -z "$ISSUE_DESC" ]; then
+          awk 'BEGIN{skip=0} {print} ' _autofix_summary.md \
+            | sed '/^## Issue Description$/,/^$/d' > _autofix_summary.tmp && mv _autofix_summary.tmp _autofix_summary.md || true
+        fi
+
+        {
+          echo "branch_name=${branch_name}"
+          echo "summary<<SUMMARY_END"
+          cat _autofix_summary.md
+          echo "SUMMARY_END"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Post-apply Lint, Test, and Diff
+      shell: bash
+      env:
+        LINT_CMD: ${{ inputs.lint_command }}
+        TEST_CMD: ${{ inputs.test_command }}
+      run: |
+        set -euo pipefail
+        : > _lint.log
+        : > _test.log
+
+        if [ -n "${LINT_CMD}" ]; then
+          set +e
+          bash -lc "${LINT_CMD}" > _lint.log 2>&1
+          lint_rc=$?
+          set -e
+        else
+          lint_rc=0
+        fi
+
+        if [ -n "${TEST_CMD}" ]; then
+          set +e
+          bash -lc "${TEST_CMD}" > _test.log 2>&1
+          test_rc=$?
+          set -e
+        else
+          test_rc=0
+        fi
+
+        # Always produce a diff artifact but do not include it in the PR body
+        git diff --no-ext-diff > _diff.patch || true
+
+    - name: Append repro script to summary
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -s scripts/autofix_repro.sh ]; then
+          {
+            echo ""
+            echo "## Repro Script"
+            echo '```bash'
+            cat scripts/autofix_repro.sh
+            echo '```'
+          } >> _autofix_summary.md
+        fi
+
+    - name: Exclude ephemeral files from PR
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p .git/info
+        {
+          echo "/.autofix_task.md"
+          echo "/_autofix_summary.md"
+          echo "/_diff.patch"
+          echo "/_issue_description.md"
+          echo "/_lint.log"
+          echo "/_test.log"
+          echo "/scripts/autofix_repro.sh"
+        } >> .git/info/exclude
+        git rm --cached -f --ignore-unmatch .autofix_task.md _autofix_summary.md _diff.patch _issue_description.md _lint.log _test.log scripts/autofix_repro.sh || true
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v6
+      with:
+        token: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
+        branch: ${{ steps.summarize.outputs.branch_name }}
+        title: 'Fix: Rollbar item ${{ inputs.item_counter }}'
+        body-path: _autofix_summary.md
+        commit-message: 'Fix Rollbar item ${{ inputs.item_counter }}'
+        labels: autofix, experimental
+        base: ${{ inputs.pr_base }}
+        draft: true
+
+    - name: Upload AutoFix Artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: autofix-${{ inputs.item_counter }}-artifacts
+        if-no-files-found: ignore
+        retention-days: 7
+        path: |
+          _autofix_summary.md
+          _issue_description.md
+          _diff.patch
+          _lint.log
+          _test.log
+          codex_exec.log
+          _mcp_err.log
+          _item_raw.json
+          AUTOFIX_PLAN.md
+          scripts/autofix_repro.sh
+
+    - name: Cleanup
+      if: always()
+      shell: bash
+      run: rm -rf _autofix_summary.md _item_raw.json _mcp_err.log .autofix_mcp .mcp.json .autofix_task.md _lint.log _test.log _diff.patch codex_exec.log || true
