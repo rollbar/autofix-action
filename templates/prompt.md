@@ -15,6 +15,10 @@ Print exactly the following boundary markers around the description so the workf
 Ensure each bullet is concise, actionable, and uses information from the Rollbar item and last occurrence (stack trace, request info, params, etc.).
 After printing the Issue Description block, immediately continue with the Objectives below in the same run. Do not stop or wait for further instructions.
 
+Reviewer feedback to incorporate (if any):
+
+{{REVIEW_FEEDBACK}}
+
 Objectives (in order):
 
 1. Investigate and debug the issue to determine the root cause (not just the symptom).

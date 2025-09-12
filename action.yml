@@ -17,8 +17,16 @@ inputs:
     required: false
     default: ''
   item_counter:
-    description: Rollbar item counter (e.g., 123456)
-    required: true
+    description: Rollbar item counter (e.g., 123456). If omitted, the action attempts to derive it from the branch name (autofix/rollbar-item-<counter>-*).
+    required: false
+  review_feedback:
+    description: Optional reviewer feedback or instructions to guide the rerun
+    required: false
+    default: ''
+  collect_review_feedback:
+    description: When true, auto-collect the full PR conversation (reviews, inline comments, PR comments) and include it if a PR is found.
+    required: false
+    default: 'true'
   environment:
     description: Rollbar environment (e.g., staging, production)
     required: false
@@ -43,6 +51,10 @@ inputs:
     description: Base branch for PR to be create
     required: false
     default: 'main'
+  pr_branch:
+    description: Optional branch name to commit to; if omitted, a new branch is generated per run
+    required: false
+    default: ''
 
 outputs:
   summary:
@@ -106,6 +118,133 @@ runs:
           echo "trust_level = \"trusted\""
         } >> ~/.codex/config.toml
 
+    - name: Collect PR conversation (optional)
+      if: ${{ inputs.collect_review_feedback == 'true' }}
+      id: collect_pr
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const {owner, repo} = context.repo;
+
+          let pr = context.payload.pull_request || null;
+          let pr_number = pr?.number || null;
+          let headRef = pr?.head?.ref || process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || '';
+          if (!pr_number && headRef) {
+            const res = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
+            const matches = res.data.filter(p => p.head && p.head.ref === headRef);
+            if (matches.length > 0) {
+              matches.sort((a,b)=> new Date(b.updated_at) - new Date(a.updated_at));
+              pr = matches[0];
+              pr_number = pr.number;
+            }
+          }
+
+          if (!pr_number) {
+            core.setOutput('review_feedback', '');
+            core.setOutput('pr_number', '');
+            core.setOutput('pr_head_ref', headRef || '');
+            return;
+          }
+
+          const [issueComments, reviews, reviewComments] = await Promise.all([
+            github.paginate(github.rest.issues.listComments, {owner, repo, issue_number: pr_number, per_page: 100}),
+            github.paginate(github.rest.pulls.listReviews, {owner, repo, pull_number: pr_number, per_page: 100}),
+            github.paginate(github.rest.pulls.listReviewComments, {owner, repo, pull_number: pr_number, per_page: 100}),
+          ]);
+
+          const events = [];
+          for (const c of issueComments) {
+            events.push({ type: 'pr_comment', author: c.user?.login || 'unknown', created_at: c.created_at, body: c.body || '' });
+          }
+          for (const r of reviews) {
+            events.push({ type: 'review', author: r.user?.login || 'unknown', created_at: r.submitted_at || r.created_at, state: r.state, body: r.body || '' });
+          }
+          for (const rc of reviewComments) {
+            events.push({ type: 'inline_comment', author: rc.user?.login || 'unknown', created_at: rc.created_at, path: rc.path, line: rc.original_line ?? rc.line ?? null, body: rc.body || '' });
+          }
+          events.sort((a,b)=> new Date(a.created_at) - new Date(b.created_at));
+
+          const header = '=== PR CONVERSATION START ===\n';
+          const footer = '\n=== PR CONVERSATION END ===\n';
+          const lines = [header];
+          for (const e of events) {
+            if (e.type === 'pr_comment') {
+              lines.push(`PR comment by @${e.author} at ${e.created_at}`);
+              lines.push('');
+              lines.push(e.body);
+            } else if (e.type === 'review') {
+              lines.push(`Review by @${e.author} at ${e.created_at} — state: ${e.state}`);
+              if ((e.body||'').trim()) { lines.push(''); lines.push(e.body); }
+            } else if (e.type === 'inline_comment') {
+              const loc = e.line ? `${e.path}:${e.line}` : e.path;
+              lines.push(`Inline comment by @${e.author} at ${e.created_at} — file: ${loc}`);
+              lines.push('');
+              lines.push(e.body);
+            }
+            lines.push('\n---\n');
+          }
+          lines.push(footer);
+          const content = lines.join('\n');
+          const outPath = `${process.env.GITHUB_WORKSPACE}/_review_feedback.md`;
+          fs.writeFileSync(outPath, content, 'utf8');
+          core.setOutput('review_feedback', content);
+          core.setOutput('review_feedback_path', outPath);
+          core.setOutput('pr_number', String(pr_number));
+          core.setOutput('pr_head_ref', pr?.head?.ref || headRef || '');
+
+    - name: Resolve effective inputs
+      id: resolve
+      shell: bash
+      env:
+        INPUT_ITEM_COUNTER: ${{ inputs.item_counter }}
+        INPUT_REVIEW_FEEDBACK: ${{ inputs.review_feedback }}
+        COLLECTED_REVIEW_FEEDBACK: ${{ steps.collect_pr.outputs.review_feedback }}
+        INPUT_PR_BRANCH: ${{ inputs.pr_branch }}
+        COLLECTED_PR_BRANCH: ${{ steps.collect_pr.outputs.pr_head_ref }}
+        COLLECTED_PR_NUMBER: ${{ steps.collect_pr.outputs.pr_number }}
+      run: |
+        set -euo pipefail
+        # Determine effective PR branch
+        pr_branch_effective="${INPUT_PR_BRANCH:-}"
+        if [ -z "$pr_branch_effective" ] && [ -n "${COLLECTED_PR_NUMBER:-}" ] && [ -n "${COLLECTED_PR_BRANCH:-}" ]; then
+          pr_branch_effective="$COLLECTED_PR_BRANCH"
+        fi
+        echo "PR_BRANCH_EFFECTIVE=$pr_branch_effective" >> "$GITHUB_ENV"
+
+        # Determine effective review feedback
+        review_feedback_effective="${INPUT_REVIEW_FEEDBACK:-}"
+        if [ -z "$review_feedback_effective" ] && [ -n "${COLLECTED_REVIEW_FEEDBACK:-}" ]; then
+          review_feedback_effective="$COLLECTED_REVIEW_FEEDBACK"
+        fi
+        if [ -n "$review_feedback_effective" ]; then
+          printf '%s' "$review_feedback_effective" > _review_feedback.effective.md || true
+        fi
+        echo "REVIEW_FEEDBACK_EFFECTIVE<<EOF" >> "$GITHUB_ENV"
+        echo "$review_feedback_effective" >> "$GITHUB_ENV"
+        echo "EOF" >> "$GITHUB_ENV"
+
+        # Determine effective item counter (input wins; else parse from branch name)
+        item_counter_effective="${INPUT_ITEM_COUNTER:-}"
+        if [ -z "$item_counter_effective" ]; then
+          ref_candidate="$pr_branch_effective"
+          if [ -z "$ref_candidate" ]; then
+            ref_candidate="${GITHUB_HEAD_REF:-}"
+          fi
+          if [ -z "$ref_candidate" ]; then
+            ref_candidate="${GITHUB_REF_NAME:-}"
+          fi
+          if [ -n "$ref_candidate" ]; then
+            parsed=$(printf '%s\n' "$ref_candidate" | sed -n 's#^autofix/rollbar-item-\([0-9][0-9]*\)-.*#\1#p') || true
+            if [ -n "$parsed" ]; then item_counter_effective="$parsed"; fi
+          fi
+        fi
+        if [ -z "$item_counter_effective" ]; then
+          echo "::error::item_counter was not provided and could not be derived from branch name (expected pattern autofix/rollbar-item-<counter>-*)."
+          exit 1
+        fi
+        echo "ITEM_COUNTER_EFFECTIVE=$item_counter_effective" >> "$GITHUB_ENV"
+
     - name: Prepare prompt and template
       shell: bash
       run: |
@@ -126,7 +265,8 @@ runs:
         esc() { printf '%s' "$1" | sed -e 's/[\\&/]/\\&/g'; }
 
         sed \
-          -e "s/{{ITEM_COUNTER}}/$(esc "${{ inputs.item_counter }}")/g" \
+          -e "s/{{ITEM_COUNTER}}/$(esc "$ITEM_COUNTER_EFFECTIVE")/g" \
+          -e "s/{{REVIEW_FEEDBACK}}/$(esc "$REVIEW_FEEDBACK_EFFECTIVE")/g" \
           -e "s/{{ENVIRONMENT}}/$(esc "${{ inputs.environment }}")/g" \
           -e "s/{{LANGUAGE}}/$(esc "${{ inputs.language }}")/g" \
           -e "s/{{TEST_COMMAND}}/$(esc "${{ inputs.test_command }}")/g" \
@@ -197,7 +337,13 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        branch_name="autofix/rollbar-item-${{ inputs.item_counter }}-${{ github.run_id }}"
+        if [ -n "$PR_BRANCH_EFFECTIVE" ]; then
+          branch_name="$PR_BRANCH_EFFECTIVE"
+        elif [ -n "${{ inputs.pr_branch }}" ]; then
+          branch_name="${{ inputs.pr_branch }}"
+        else
+          branch_name="autofix/rollbar-item-$ITEM_COUNTER_EFFECTIVE-${{ github.run_id }}"
+        fi
 
         # Render PR body from template with placeholders + injected issue description
         : > _autofix_summary.md
@@ -209,7 +355,8 @@ runs:
         # Replace placeholders using awk to support multi-line values safely
         awk \
           -v issue_desc="$ISSUE_DESC" \
-          -v item_counter="${{ inputs.item_counter }}" \
+          -v item_counter="$ITEM_COUNTER_EFFECTIVE" \
+          -v review_feedback="$REVIEW_FEEDBACK_EFFECTIVE" \
           -v environment="${{ inputs.environment }}" \
           -v language="${{ inputs.language }}" \
           -v test_command="${{ inputs.test_command }}" \
@@ -220,6 +367,7 @@ runs:
             # Escape characters special in awk replacement: & and \
             issue_desc_e = issue_desc; gsub(/\\/, "\\\\", issue_desc_e); gsub(/&/, "\\&", issue_desc_e);
             item_counter_e = item_counter; gsub(/\\/, "\\\\", item_counter_e); gsub(/&/, "\\&", item_counter_e);
+            review_feedback_e = review_feedback; gsub(/\\/, "\\\\", review_feedback_e); gsub(/&/, "\\&", review_feedback_e);
             environment_e = environment; gsub(/\\/, "\\\\", environment_e); gsub(/&/, "\\&", environment_e);
             language_e = language; gsub(/\\/, "\\\\", language_e); gsub(/&/, "\\&", language_e);
             test_command_e = test_command; gsub(/\\/, "\\\\", test_command_e); gsub(/&/, "\\&", test_command_e);
@@ -229,6 +377,7 @@ runs:
           {
             gsub(/\{\{ISSUE_DESCRIPTION\}\}/, issue_desc_e);
             gsub(/\{\{ITEM_COUNTER\}\}/, item_counter_e);
+            gsub(/\{\{REVIEW_FEEDBACK\}\}/, review_feedback_e);
             gsub(/\{\{ENVIRONMENT\}\}/, environment_e);
             gsub(/\{\{LANGUAGE\}\}/, language_e);
             gsub(/\{\{TEST_COMMAND\}\}/, test_command_e);
@@ -242,6 +391,12 @@ runs:
         if [ -z "$ISSUE_DESC" ]; then
           awk 'BEGIN{skip=0} {print} ' _autofix_summary.md \
             | sed '/^## Issue Description$/,/^$/d' > _autofix_summary.tmp && mv _autofix_summary.tmp _autofix_summary.md || true
+        fi
+
+        # If no reviewer feedback was provided, drop that section
+        if [ -z "$REVIEW_FEEDBACK_EFFECTIVE" ]; then
+          awk 'BEGIN{skip=0} {print} ' _autofix_summary.md \
+            | sed '/^## Reviewer Feedback Incorporated$/,/^$/d' > _autofix_summary.tmp && mv _autofix_summary.tmp _autofix_summary.md || true
         fi
 
         {
@@ -317,9 +472,9 @@ runs:
       with:
         token: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
         branch: ${{ steps.summarize.outputs.branch_name }}
-        title: 'Fix: Rollbar item ${{ inputs.item_counter }}'
+        title: 'Fix: Rollbar item ${{ env.ITEM_COUNTER_EFFECTIVE }}'
         body-path: _autofix_summary.md
-        commit-message: 'Fix Rollbar item ${{ inputs.item_counter }}'
+        commit-message: 'Fix Rollbar item ${{ env.ITEM_COUNTER_EFFECTIVE }}'
         labels: autofix, experimental
         base: ${{ inputs.pr_base }}
         draft: true
@@ -328,7 +483,7 @@ runs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: autofix-${{ inputs.item_counter }}-artifacts
+        name: autofix-${{ env.ITEM_COUNTER_EFFECTIVE }}-artifacts
         if-no-files-found: ignore
         retention-days: 7
         path: |
