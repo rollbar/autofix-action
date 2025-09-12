@@ -206,16 +206,37 @@ runs:
           ISSUE_DESC=$(cat _issue_description.md)
         fi
 
-        esc() { printf '%s' "$1" | sed -e 's/[\\&/]/\\&/g'; }
-        sed \
-          -e "s/{{ISSUE_DESCRIPTION}}/$(esc "$ISSUE_DESC")/g" \
-          -e "s/{{ITEM_COUNTER}}/$(esc "${{ inputs.item_counter }}")/g" \
-          -e "s/{{ENVIRONMENT}}/$(esc "${{ inputs.environment }}")/g" \
-          -e "s/{{LANGUAGE}}/$(esc "${{ inputs.language }}")/g" \
-          -e "s/{{TEST_COMMAND}}/$(esc "${{ inputs.test_command }}")/g" \
-          -e "s/{{LINT_COMMAND}}/$(esc "${{ inputs.lint_command }}")/g" \
-          -e "s/{{MAX_ITERATIONS}}/$(esc "${{ inputs.max_iterations }}")/g" \
-          "$PR_TEMPLATE_SRC" > _autofix_summary.md
+        # Replace placeholders using awk to support multi-line values safely
+        awk \
+          -v issue_desc="$ISSUE_DESC" \
+          -v item_counter="${{ inputs.item_counter }}" \
+          -v environment="${{ inputs.environment }}" \
+          -v language="${{ inputs.language }}" \
+          -v test_command="${{ inputs.test_command }}" \
+          -v lint_command="${{ inputs.lint_command }}" \
+          -v max_iterations="${{ inputs.max_iterations }}" \
+          '
+          BEGIN {
+            # Escape characters special in awk replacement: & and \
+            issue_desc_e = issue_desc; gsub(/\\/, "\\\\", issue_desc_e); gsub(/&/, "\\&", issue_desc_e);
+            item_counter_e = item_counter; gsub(/\\/, "\\\\", item_counter_e); gsub(/&/, "\\&", item_counter_e);
+            environment_e = environment; gsub(/\\/, "\\\\", environment_e); gsub(/&/, "\\&", environment_e);
+            language_e = language; gsub(/\\/, "\\\\", language_e); gsub(/&/, "\\&", language_e);
+            test_command_e = test_command; gsub(/\\/, "\\\\", test_command_e); gsub(/&/, "\\&", test_command_e);
+            lint_command_e = lint_command; gsub(/\\/, "\\\\", lint_command_e); gsub(/&/, "\\&", lint_command_e);
+            max_iterations_e = max_iterations; gsub(/\\/, "\\\\", max_iterations_e); gsub(/&/, "\\&", max_iterations_e);
+          }
+          {
+            gsub(/\{\{ISSUE_DESCRIPTION\}\}/, issue_desc_e);
+            gsub(/\{\{ITEM_COUNTER\}\}/, item_counter_e);
+            gsub(/\{\{ENVIRONMENT\}\}/, environment_e);
+            gsub(/\{\{LANGUAGE\}\}/, language_e);
+            gsub(/\{\{TEST_COMMAND\}\}/, test_command_e);
+            gsub(/\{\{LINT_COMMAND\}\}/, lint_command_e);
+            gsub(/\{\{MAX_ITERATIONS\}\}/, max_iterations_e);
+            print
+          }
+          ' "$PR_TEMPLATE_SRC" > _autofix_summary.md
 
         # If no issue description was found, drop the header and extra blank line
         if [ -z "$ISSUE_DESC" ]; then
