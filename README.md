@@ -45,7 +45,11 @@ jobs:
 - `openai_api_key` (required): API key for Codex.
 - `rollbar_access_token` (required): Rollbar project access token (read/write) for MCP tools.
 - `github_token` (optional): Token used to open the PR. Use a PAT to allow PR-triggered workflows; omit to use `GITHUB_TOKEN`.
-- `item_counter` (required): Rollbar item counter (e.g., `123456`).
+- `item_counter` (optional): Rollbar item counter (e.g., `123456`). If omitted and the run is associated with a PR whose head branch name matches `autofix/rollbar-item-<counter>-*`, the action derives it automatically.
+- `review_feedback` (optional): Free-form reviewer comments or instructions to guide a rerun. Pass this from a PR review-triggered workflow.
+- `collect_review_feedback` (optional, default `true`): When enabled, the action gathers the full PR conversation (PR comments, review bodies, inline review comments) and includes it in the prompt when a PR can be identified.
+- `review_feedback_truncate` (optional, default `true`): If the PR conversation is very large, truncate to the last N characters before injecting.
+- `review_feedback_max_chars` (optional, default `60000`): Maximum number of characters to keep when truncating.
 - `environment` (optional): Rollbar environment; default `unknown`.
 - `language` (optional): Project language hint; default `unknown`.
 - `test_command` (optional): Command to run tests.
@@ -78,7 +82,7 @@ Host-level overrides (optional):
 
 Placeholders supported in both templates:
 
-- `{{ITEM_COUNTER}}`, `{{ENVIRONMENT}}`, `{{LANGUAGE}}`, `{{TEST_COMMAND}}`, `{{LINT_COMMAND}}`, `{{MAX_ITERATIONS}}`
+- `{{ITEM_COUNTER}}`, `{{ENVIRONMENT}}`, `{{LANGUAGE}}`, `{{TEST_COMMAND}}`, `{{LINT_COMMAND}}`, `{{MAX_ITERATIONS}}`, `{{REVIEW_FEEDBACK}}`
 - In the PR template, `{{ISSUE_DESCRIPTION}}` is replaced with the extracted issue description block produced by Codex.
 
 Note: The prompt template must retain the exact `=== ISSUE DESCRIPTION START ===` / `=== ISSUE DESCRIPTION END ===` markers so the workflow can extract the Issue Description.
@@ -87,7 +91,15 @@ Note: The prompt template must retain the exact `=== ISSUE DESCRIPTION START ===
 
 Use semver tags and a major alias once published. Recommended usage in workflows: `rollbar/autofix-action@v1`.
 
+### Review-driven reruns
+
+If a maintainer submits a PR review with “Changes requested” on a branch named `autofix/rollbar-item-<counter>-*`, a workflow can simply trigger this action without passing `item_counter` or any feedback. The action will:
+
+- Detect the PR and its head branch automatically
+- Derive the `item_counter` from the branch name
+- Collect the entire PR conversation (if `collect_review_feedback: true`), truncating if enabled
+- Re-run the Autofix agent and push to the same branch (when the workflow uses the generated branch name)
+
 ## License
 
 MIT
-

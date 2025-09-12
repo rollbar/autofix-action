@@ -12,3 +12,6 @@ Rollbar AutoFix (Stub)
 
 _Patch applied directly during `codex exec` (write mode)._
 
+## Reviewer Feedback Incorporated
+
+{{REVIEW_FEEDBACK}}
