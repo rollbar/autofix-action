@@ -27,6 +27,14 @@ inputs:
     description: When true, auto-collect the full PR conversation (reviews, inline comments, PR comments) and include it if a PR is found.
     required: false
     default: 'true'
+  review_feedback_truncate:
+    description: Whether to truncate very large PR conversations before injecting into the prompt.
+    required: false
+    default: 'true'
+  review_feedback_max_chars:
+    description: Max characters of PR conversation to include when truncation is enabled.
+    required: false
+    default: '60000'
   environment:
     description: Rollbar environment (e.g., staging, production)
     required: false
@@ -122,7 +130,11 @@ runs:
       if: ${{ inputs.collect_review_feedback == 'true' }}
       id: collect_pr
       uses: actions/github-script@v7
+      env:
+        TRUNCATE: ${{ inputs.review_feedback_truncate }}
+        MAX_CHARS: ${{ inputs.review_feedback_max_chars }}
       with:
+        github-token: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
         script: |
           const fs = require('fs');
           const {owner, repo} = context.repo;
@@ -130,6 +142,12 @@ runs:
           let pr = context.payload.pull_request || null;
           let pr_number = pr?.number || null;
           let headRef = pr?.head?.ref || process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME || '';
+          if (!pr_number && context.payload.issue && context.payload.issue.pull_request) {
+            pr_number = context.payload.issue.number;
+            const got = await github.rest.pulls.get({ owner, repo, pull_number: pr_number });
+            pr = got.data;
+            headRef = pr?.head?.ref || headRef;
+          }
           if (!pr_number && headRef) {
             const res = await github.rest.pulls.list({ owner, repo, state: 'open', per_page: 100 });
             const matches = res.data.filter(p => p.head && p.head.ref === headRef);
@@ -185,7 +203,17 @@ runs:
             lines.push('\n---\n');
           }
           lines.push(footer);
-          const content = lines.join('\n');
+          let content = lines.join('\n');
+
+          const doTruncate = String(process.env.TRUNCATE || 'true').toLowerCase() === 'true';
+          const maxChars = Math.max(4000, parseInt(process.env.MAX_CHARS || '60000', 10) || 60000);
+          if (doTruncate && content.length > maxChars) {
+            const over = content.length - maxChars;
+            const note = `NOTE: Conversation truncated to last ${maxChars} chars (total ${content.length}; removed ${over}).\n\n`;
+            const tail = content.slice(content.length - maxChars);
+            content = header + note + tail.replace(header, '');
+            if (!content.endsWith(footer)) content += footer;
+          }
           const outPath = `${process.env.GITHUB_WORKSPACE}/_review_feedback.md`;
           fs.writeFileSync(outPath, content, 'utf8');
           core.setOutput('review_feedback', content);
@@ -245,7 +273,40 @@ runs:
         fi
         echo "ITEM_COUNTER_EFFECTIVE=$item_counter_effective" >> "$GITHUB_ENV"
 
+        # If triggered by PR review or issue comment and branch is not an Autofix branch, mark to skip heavy steps
+        if [ "${GITHUB_EVENT_NAME:-}" = "pull_request_review" ] || [ "${GITHUB_EVENT_NAME:-}" = "issue_comment" ]; then
+          if [ -n "$pr_branch_effective" ] && ! printf '%s' "$pr_branch_effective" | grep -qE '^autofix/rollbar-item-[0-9]+'; then
+            echo "SHOULD_SKIP=true" >> "$GITHUB_ENV"
+            echo "SKIP_REASON=Non-autofix PR branch ($pr_branch_effective)" >> "$GITHUB_ENV"
+            echo "::notice ::Autofix action skipping: $SKIP_REASON"
+          fi
+        fi
+
+    - name: Comment: rerun started
+      if: ${{ env.SHOULD_SKIP != 'true' && steps.collect_pr.outputs.pr_number != '' }}
+      uses: actions/github-script@v7
+      env:
+        PR_NUMBER: ${{ steps.collect_pr.outputs.pr_number }}
+        ITEM_COUNTER: ${{ env.ITEM_COUNTER_EFFECTIVE }}
+        REVIEW_FEEDBACK: ${{ steps.collect_pr.outputs.review_feedback }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      with:
+        github-token: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
+        script: |
+          const {owner, repo} = context.repo;
+          const pr = parseInt(process.env.PR_NUMBER, 10);
+          const item = process.env.ITEM_COUNTER;
+          const runUrl = process.env.RUN_URL;
+          const len = (process.env.REVIEW_FEEDBACK || '').length;
+          const body = [
+            `Autofix rerun started for Rollbar item ${item}.`,
+            `Including PR conversation (${len.toLocaleString()} chars).`,
+            `Run: ${runUrl}`,
+          ].join('\n\n');
+          await github.rest.issues.createComment({ owner, repo, issue_number: pr, body });
+
     - name: Prepare prompt and template
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -276,6 +337,7 @@ runs:
 
       # Export PR template path for later summarize step
     - name: Export PR template path
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -286,6 +348,7 @@ runs:
         echo "PR_TEMPLATE_SRC=$PR_TEMPLATE_SRC" >> "$GITHUB_ENV"
 
     - name: Run Codex AutoFix
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       id: codex_exec
       shell: bash
       env:
@@ -333,6 +396,7 @@ runs:
         fi
 
     - name: Summarize
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       id: summarize
       shell: bash
       run: |
@@ -407,6 +471,7 @@ runs:
         } >> "$GITHUB_OUTPUT"
 
     - name: Post-apply Lint, Test, and Diff
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       shell: bash
       env:
         LINT_CMD: ${{ inputs.lint_command }}
@@ -438,6 +503,7 @@ runs:
         git diff --no-ext-diff > _diff.patch || true
 
     - name: Append repro script to summary
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -452,6 +518,7 @@ runs:
         fi
 
     - name: Exclude ephemeral files from PR
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -468,6 +535,8 @@ runs:
         git rm --cached -f --ignore-unmatch .autofix_task.md _autofix_summary.md _diff.patch _issue_description.md _lint.log _test.log scripts/autofix_repro.sh || true
 
     - name: Create Pull Request
+      id: cpr
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       uses: peter-evans/create-pull-request@v6
       with:
         token: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
@@ -479,8 +548,38 @@ runs:
         base: ${{ inputs.pr_base }}
         draft: true
 
+    - name: Comment: rerun completed
+      if: ${{ env.SHOULD_SKIP != 'true' }}
+      uses: actions/github-script@v7
+      env:
+        PR_NUMBER_COLLECT: ${{ steps.collect_pr.outputs.pr_number }}
+        PR_NUMBER_CPR: ${{ steps.cpr.outputs.pull-request-number }}
+        PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+        OPERATION: ${{ steps.cpr.outputs.pull-request-operation }}
+        ITEM_COUNTER: ${{ env.ITEM_COUNTER_EFFECTIVE }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      with:
+        github-token: ${{ inputs.github_token != '' && inputs.github_token || github.token }}
+        script: |
+          const {owner, repo} = context.repo;
+          const prnum = process.env.PR_NUMBER_CPR || process.env.PR_NUMBER_COLLECT || '';
+          const pr = parseInt(prnum, 10);
+          if (!pr) { return; }
+          const url = process.env.PR_URL || '';
+          const op = (process.env.OPERATION || '').toLowerCase();
+          const item = process.env.ITEM_COUNTER;
+          const runUrl = process.env.RUN_URL;
+          const opText = op ? `operation: ${op}` : 'operation: updated';
+          const lines = [
+            `Autofix rerun completed for Rollbar item ${item} — ${opText}.`,
+            url ? `PR: ${url}` : '',
+            `Run: ${runUrl}`,
+          ].filter(Boolean);
+          const body = lines.join('\n\n');
+          await github.rest.issues.createComment({ owner, repo, issue_number: pr, body });
+
     - name: Upload AutoFix Artifacts
-      if: always()
+      if: ${{ env.SHOULD_SKIP != 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: autofix-${{ env.ITEM_COUNTER_EFFECTIVE }}-artifacts

@@ -48,6 +48,8 @@ jobs:
 - `item_counter` (optional): Rollbar item counter (e.g., `123456`). If omitted and the run is associated with a PR whose head branch name matches `autofix/rollbar-item-<counter>-*`, the action derives it automatically.
 - `review_feedback` (optional): Free-form reviewer comments or instructions to guide a rerun. Pass this from a PR review-triggered workflow.
 - `collect_review_feedback` (optional, default `true`): When enabled, the action gathers the full PR conversation (PR comments, review bodies, inline review comments) and includes it in the prompt when a PR can be identified.
+- `review_feedback_truncate` (optional, default `true`): If the PR conversation is very large, truncate to the last N characters before injecting.
+- `review_feedback_max_chars` (optional, default `60000`): Maximum number of characters to keep when truncating.
 - `environment` (optional): Rollbar environment; default `unknown`.
 - `language` (optional): Project language hint; default `unknown`.
 - `test_command` (optional): Command to run tests.
@@ -95,7 +97,7 @@ If a maintainer submits a PR review with “Changes requested” on a branch nam
 
 - Detect the PR and its head branch automatically
 - Derive the `item_counter` from the branch name
-- Collect the entire PR conversation (if `collect_review_feedback: true`)
+- Collect the entire PR conversation (if `collect_review_feedback: true`), truncating if enabled
 - Re-run the Autofix agent and push to the same branch (when the workflow uses the generated branch name)
 
 ## License
