@@ -63,6 +63,14 @@ inputs:
     description: Optional branch name to commit to; if omitted, a new branch is generated per run
     required: false
     default: ''
+  rollbar_base_url:
+    description: Base URL of the Rollbar service for callbacks (e.g., https://rollbar.com)
+    required: false
+    default: 'https://rollbar.com'
+  rollbar_autofix_callback_token:
+    description: Shared secret for Rollbar autofix run update callbacks
+    required: false
+    default: ''
 
 outputs:
   summary:
@@ -80,6 +88,22 @@ runs:
       with:
         node-version: '22'
         check-latest: true
+
+    - name: Report run started to Rollbar (link run)
+      if: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.autofix_run_id && inputs.rollbar_base_url != '' && inputs.rollbar_autofix_callback_token != '' }}
+      shell: bash
+      env:
+        ROLLBAR_BASE_URL: ${{ inputs.rollbar_base_url }}
+        ROLLBAR_AUTOFIX_CALLBACK_TOKEN: ${{ inputs.rollbar_autofix_callback_token }}
+        RUN_ID: ${{ github.event.client_payload.autofix_run_id }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        curl -sS -X POST \
+          "$ROLLBAR_BASE_URL/callback/github/autofix/runs/$RUN_ID/update" \
+          -H 'Content-Type: application/json' \
+          -H "X-Autofix-Token: $ROLLBAR_AUTOFIX_CALLBACK_TOKEN" \
+          -d "{\"run_url\":\"$RUN_URL\",\"status\":\"IN_PROGRESS\"}"
 
     - name: Install Codex CLI and Rollbar MCP
       shell: bash
@@ -548,6 +572,22 @@ runs:
         base: ${{ inputs.pr_base }}
         draft: true
 
+    - name: Report PR opened to Rollbar
+      if: ${{ env.SHOULD_SKIP != 'true' && steps.cpr.outputs['pull-request-url'] != '' && github.event_name == 'repository_dispatch' && github.event.client_payload.autofix_run_id && inputs.rollbar_base_url != '' && inputs.rollbar_autofix_callback_token != '' }}
+      shell: bash
+      env:
+        ROLLBAR_BASE_URL: ${{ inputs.rollbar_base_url }}
+        ROLLBAR_AUTOFIX_CALLBACK_TOKEN: ${{ inputs.rollbar_autofix_callback_token }}
+        RUN_ID: ${{ github.event.client_payload.autofix_run_id }}
+        PR_URL: ${{ steps.cpr.outputs.pull-request-url }}
+      run: |
+        set -euo pipefail
+        curl -sS -X POST \
+          "$ROLLBAR_BASE_URL/callback/github/autofix/runs/$RUN_ID/update" \
+          -H 'Content-Type: application/json' \
+          -H "X-Autofix-Token: $ROLLBAR_AUTOFIX_CALLBACK_TOKEN" \
+          -d "{\"pr_url\":\"$PR_URL\",\"status\":\"PR_OPENED\"}"
+
     - name: "Comment: rerun completed"
       if: ${{ env.SHOULD_SKIP != 'true' }}
       uses: actions/github-script@v7
@@ -601,3 +641,33 @@ runs:
       if: always()
       shell: bash
       run: rm -rf _autofix_summary.md _item_raw.json _mcp_err.log .autofix_mcp .mcp.json .autofix_task.md _lint.log _test.log _diff.patch codex_exec.log || true
+
+    - name: Report failure to Rollbar
+      if: ${{ always() && failure() && github.event_name == 'repository_dispatch' && github.event.client_payload.autofix_run_id && inputs.rollbar_base_url != '' && inputs.rollbar_autofix_callback_token != '' }}
+      shell: bash
+      env:
+        ROLLBAR_BASE_URL: ${{ inputs.rollbar_base_url }}
+        ROLLBAR_AUTOFIX_CALLBACK_TOKEN: ${{ inputs.rollbar_autofix_callback_token }}
+        RUN_ID: ${{ github.event.client_payload.autofix_run_id }}
+      run: |
+        set -euo pipefail
+        curl -sS -X POST \
+          "$ROLLBAR_BASE_URL/callback/github/autofix/runs/$RUN_ID/update" \
+          -H 'Content-Type: application/json' \
+          -H "X-Autofix-Token: $ROLLBAR_AUTOFIX_CALLBACK_TOKEN" \
+          -d '{"status":"FAILED"}'
+
+    - name: Report cancelled to Rollbar
+      if: ${{ always() && cancelled() && github.event_name == 'repository_dispatch' && github.event.client_payload.autofix_run_id && inputs.rollbar_base_url != '' && inputs.rollbar_autofix_callback_token != '' }}
+      shell: bash
+      env:
+        ROLLBAR_BASE_URL: ${{ inputs.rollbar_base_url }}
+        ROLLBAR_AUTOFIX_CALLBACK_TOKEN: ${{ inputs.rollbar_autofix_callback_token }}
+        RUN_ID: ${{ github.event.client_payload.autofix_run_id }}
+      run: |
+        set -euo pipefail
+        curl -sS -X POST \
+          "$ROLLBAR_BASE_URL/callback/github/autofix/runs/$RUN_ID/update" \
+          -H 'Content-Type: application/json' \
+          -H "X-Autofix-Token: $ROLLBAR_AUTOFIX_CALLBACK_TOKEN" \
+          -d '{"status":"CANCELLED"}'
