@@ -4,22 +4,49 @@ Automatically opens PRs to fix Rollbar errors using Codex and the Rollbar MCP se
 
 ## Usage
 
-Minimal example:
+Create the following workflow as `.github/workflows/rollbar-autofix.yml`:
 
 ```yaml
 name: Rollbar Autofix
 
+
 on:
+  repository_dispatch:
+    types: [rollbar-autofix]
   workflow_dispatch:
+    inputs:
+      item_counter:
+        description: "Rollbar item counter (e.g., 123456)"
+        required: true
+        type: string
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
 
 jobs:
   autofix:
+    # Only gate PR-review triggered runs; other triggers always run
+    if: |
+      (github.event_name != 'pull_request_review' && github.event_name != 'issue_comment') ||
+      (
+        github.event_name == 'pull_request_review' &&
+        github.event.action == 'submitted' &&
+        github.event.review.state == 'changes_requested' &&
+        startsWith(github.event.pull_request.head.ref, 'autofix/rollbar-item-')
+      ) || (
+        github.event_name == 'issue_comment' &&
+        github.event.action == 'created' &&
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '/autofix')
+      )
     permissions:
       contents: write
       pull-requests: write
+      issues: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,17 +54,19 @@ jobs:
           fetch-depth: 0
 
       - name: Run AutoFix Agent
-        uses: rollbar/autofix-action@v1
+        id: autofix
+        uses: rollbar/autofix-action@v0.1
         with:
           rollbar_access_token: ${{ secrets.ROLLBAR_AUTOFIX_ACCESS_TOKEN }}
           github_token: ${{ secrets.ROLLBAR_AUTOFIX_GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          item_counter: '123456'
+          item_counter: ${{ inputs.item_counter || github.event.client_payload.item_counter }}
           environment: production
-          language: node
+          language: python 3.10, node 16
           test_command: npm test --silent
           lint_command: npm run -s lint
           max_iterations: 2
+          pr_base: master
 ```
 
 ## Inputs
