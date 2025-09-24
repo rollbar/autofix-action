@@ -33504,8 +33504,9 @@ async function createOrUpdatePullRequest(summaryContent, summaryPath, inputs, wo
     };
     if (existing.data.length > 0) {
         const prNumber = existing.data[0].number;
+        const { head: _head, draft: _draft, ...updateParams } = prParams;
         await octokit.rest.pulls.update({
-            ...prParams,
+            ...updateParams,
             pull_number: prNumber
         });
         await ensureLabels(octokit, owner, repo, prNumber);
@@ -33563,11 +33564,26 @@ async function uploadArtifacts(itemCounter, workspace) {
         core.endGroup();
         return;
     }
-    await artifactClient.uploadArtifact(`autofix-${itemCounter}-artifacts`, files, workspace, {
+    const artifactName = buildArtifactName(itemCounter);
+    await artifactClient.uploadArtifact(artifactName, files, workspace, {
         continueOnError: true,
         retentionDays: 7
     });
     core.endGroup();
+}
+function buildArtifactName(itemCounter) {
+    const prefix = 'autofix-';
+    const suffix = '-artifacts';
+    const MAX_ARTIFACT_NAME_LENGTH = 64;
+    const sanitizedCounter = itemCounter
+        .replace(/[^a-zA-Z0-9_-]/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    const safeCounter = sanitizedCounter.length > 0 ? sanitizedCounter : 'item';
+    const maxCounterLength = MAX_ARTIFACT_NAME_LENGTH - (prefix.length + suffix.length);
+    const truncatedCounter = maxCounterLength > 0 ? safeCounter.slice(0, maxCounterLength) : safeCounter;
+    const finalCounter = truncatedCounter.replace(/^-+|-+$/g, '') || 'item';
+    return `${prefix}${finalCounter}${suffix}`;
 }
 async function cleanup(workspace) {
     core.startGroup('Cleanup');

@@ -587,8 +587,10 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
     return;
   }
 
+  const artifactName = buildArtifactName(itemCounter);
+
   await artifactClient.uploadArtifact(
-    `autofix-${itemCounter}-artifacts`,
+    artifactName,
     files,
     workspace,
     {
@@ -597,6 +599,25 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
     }
   );
   core.endGroup();
+}
+
+function buildArtifactName(itemCounter: string): string {
+  const prefix = 'autofix-';
+  const suffix = '-artifacts';
+  const MAX_ARTIFACT_NAME_LENGTH = 64;
+
+  const sanitizedCounter = itemCounter
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  const safeCounter = sanitizedCounter.length > 0 ? sanitizedCounter : 'item';
+
+  const maxCounterLength = MAX_ARTIFACT_NAME_LENGTH - (prefix.length + suffix.length);
+  const truncatedCounter = maxCounterLength > 0 ? safeCounter.slice(0, maxCounterLength) : safeCounter;
+  const finalCounter = truncatedCounter.replace(/^-+|-+$/g, '') || 'item';
+
+  return `${prefix}${finalCounter}${suffix}`;
 }
 
 async function cleanup(workspace: string): Promise<void> {
