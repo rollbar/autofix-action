@@ -116,7 +116,12 @@ Note: The prompt template must retain the exact `=== ISSUE DESCRIPTION START ===
 
 Use semver tags and a major alias once published. Recommended usage in workflows: `rollbar/autofix-action@v1`.
 
+## Development
+
+- Run `npm install` to install dependencies.
+- Make changes under `src/` and update the bundled files with `npm run build`.
+- Commit the generated `dist/` artifacts alongside source changes.
+
 ## License
 
 MIT
-
