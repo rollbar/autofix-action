@@ -66,4 +66,20 @@ describe('buildArtifactName', () => {
     expect(name.length).toBeLessThanOrEqual(64);
     expect(name).not.toContain(' ');
   });
+
+  it('appends a unique suffix when provided', () => {
+    const name = buildArtifactName('item-123', '987654321-2');
+
+    expect(name).toBe('autofix-item-123-987654321-2-artifacts');
+  });
+
+  it('preserves uniqueness even when the suffix must be truncated', () => {
+    const longSuffix = 'run-' + 'x'.repeat(100) + '-42';
+    const name = buildArtifactName('counter', longSuffix);
+
+    expect(name.startsWith('autofix-')).toBe(true);
+    expect(name.endsWith('-artifacts')).toBe(true);
+    expect(name.length).toBeLessThanOrEqual(64);
+    expect(name).toMatch(/x-42-artifacts$/);
+  });
 });

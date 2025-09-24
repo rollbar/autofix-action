@@ -527,7 +527,9 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
     return;
   }
 
-  const artifactName = buildArtifactName(itemCounter);
+  const runId = github.context.runId ? String(github.context.runId) : '0';
+  const runAttempt = github.context.runAttempt ? String(github.context.runAttempt) : '1';
+  const artifactName = buildArtifactName(itemCounter, `${runId}-${runAttempt}`);
 
   await artifactClient.uploadArtifact(
     artifactName,

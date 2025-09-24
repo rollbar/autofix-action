@@ -71,21 +71,74 @@ export function removeIssueDescriptionSection(content: string): string {
   return result.join('\n');
 }
 
-export function buildArtifactName(itemCounter: string): string {
+function sanitizeSegment(segment: string): string {
+  return segment
+    .replace(/[^a-zA-Z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+export function buildArtifactName(itemCounter: string, uniqueSuffix?: string): string {
   const prefix = 'autofix-';
   const suffix = '-artifacts';
   const MAX_ARTIFACT_NAME_LENGTH = 64;
 
-  const sanitizedCounter = itemCounter
-    .replace(/[^a-zA-Z0-9_-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
+  const safeCounter = sanitizeSegment(itemCounter) || 'item';
+  const safeSuffix = uniqueSuffix ? sanitizeSegment(uniqueSuffix) : '';
 
-  const safeCounter = sanitizedCounter.length > 0 ? sanitizedCounter : 'item';
+  const availableLength = MAX_ARTIFACT_NAME_LENGTH - prefix.length - suffix.length;
+  if (availableLength <= 0) {
+    return `${prefix}item${suffix}`;
+  }
 
-  const maxCounterLength = MAX_ARTIFACT_NAME_LENGTH - (prefix.length + suffix.length);
-  const truncatedCounter = maxCounterLength > 0 ? safeCounter.slice(0, maxCounterLength) : safeCounter;
-  const finalCounter = truncatedCounter.replace(/^-+|-+$/g, '') || 'item';
+  if (!safeSuffix) {
+    const counterOnly = safeCounter.slice(0, availableLength).replace(/^-+|-+$/g, '') || 'item';
+    return `${prefix}${counterOnly}${suffix}`;
+  }
 
-  return `${prefix}${finalCounter}${suffix}`;
+  let suffixPart = safeSuffix;
+  if (suffixPart.length > availableLength) {
+    suffixPart = suffixPart.slice(-availableLength);
+  }
+
+  let counterPart = safeCounter;
+  let remaining = availableLength - suffixPart.length;
+
+  if (remaining <= 0) {
+    counterPart = '';
+  } else {
+    const needsHyphen = counterPart.length > 0;
+    if (needsHyphen) {
+      remaining -= 1;
+    }
+    if (remaining <= 0) {
+      counterPart = '';
+    } else if (counterPart.length > remaining) {
+      counterPart = counterPart.slice(0, remaining);
+    }
+  }
+
+  counterPart = counterPart.replace(/^-+|-+$/g, '');
+  suffixPart = suffixPart.replace(/^-+|-+$/g, '') || 'run';
+
+  let body = '';
+  if (counterPart && suffixPart) {
+    body = `${counterPart}-${suffixPart}`;
+  } else if (suffixPart) {
+    body = suffixPart;
+  } else if (counterPart) {
+    body = counterPart;
+  }
+
+  if (!body) {
+    body = 'item';
+  }
+
+  if (body.length > availableLength) {
+    body = body.slice(-availableLength);
+  }
+
+  body = body.replace(/^-+|-+$/g, '') || 'item';
+
+  return `${prefix}${body}${suffix}`;
 }
