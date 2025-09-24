@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as exec from '@actions/exec';
 import * as github from '@actions/github';
 import * as io from '@actions/io';
-import * as artifact from '@actions/artifact';
+import {DefaultArtifactClient} from '@actions/artifact';
 import {createWriteStream, existsSync} from 'fs';
 import {promises as fs} from 'fs';
 import * as path from 'path';
@@ -505,7 +505,7 @@ async function ensureLabels(
 
 async function uploadArtifacts(itemCounter: string, workspace: string): Promise<void> {
   core.startGroup('Upload AutoFix artifacts');
-  const artifactClient = artifact.create();
+  const artifactClient = new DefaultArtifactClient();
   const files = [
     '_autofix_summary.md',
     '_issue_description.md',
@@ -534,7 +534,6 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
     files,
     workspace,
     {
-      continueOnError: true,
       retentionDays: 7
     }
   );
