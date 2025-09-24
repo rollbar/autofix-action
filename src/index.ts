@@ -7,6 +7,12 @@ import {createWriteStream, existsSync} from 'fs';
 import {promises as fs} from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import {
+  applyTemplate,
+  buildArtifactName,
+  captureLastDelimitedBlock,
+  removeIssueDescriptionSection
+} from './utils';
 
 interface Inputs {
   openaiApiKey: string;
@@ -20,13 +26,6 @@ interface Inputs {
   maxIterations: string;
   prBase: string;
 }
-
-interface TemplatePlaceholders {
-  [key: string]: string;
-}
-
-const ISSUE_DESC_START = '=== ISSUE DESCRIPTION START ===';
-const ISSUE_DESC_END = '=== ISSUE DESCRIPTION END ===';
 
 async function run(): Promise<void> {
   try {
@@ -181,22 +180,21 @@ async function resolveTemplatePath(
     'rollbar-autofix',
     filename
   );
-  if (existsSync(overridePath)) {
+
+  try {
+    await fs.access(overridePath);
     return overridePath;
+  } catch {
+    // Fall back to default template below when override is missing.
   }
+
   const defaultPath = path.join(actionPath, 'templates', filename);
-  if (!existsSync(defaultPath)) {
+  try {
+    await fs.access(defaultPath);
+  } catch {
     throw new Error(`Template ${filename} not found at ${defaultPath}`);
   }
   return defaultPath;
-}
-
-function applyTemplate(template: string, placeholders: TemplatePlaceholders): string {
-  let result = template;
-  for (const [key, value] of Object.entries(placeholders)) {
-    result = result.split(`{{${key}}}`).join(value);
-  }
-  return result;
 }
 
 async function runCodexExec(
@@ -277,44 +275,6 @@ async function extractIssueDescription(
 
   return extracted;
 }
-
-function captureLastDelimitedBlock(content: string): string {
-  let searchIndex = 0;
-  let lastBlock = '';
-  while (searchIndex < content.length) {
-    const start = content.indexOf(ISSUE_DESC_START, searchIndex);
-    if (start === -1) {
-      break;
-    }
-    const blockStart = start + ISSUE_DESC_START.length;
-    const end = content.indexOf(ISSUE_DESC_END, blockStart);
-    if (end === -1) {
-      break;
-    }
-    lastBlock = content.slice(blockStart, end);
-    searchIndex = end + ISSUE_DESC_END.length;
-  }
-
-  if (!lastBlock) {
-    return '';
-  }
-
-  const lines = lastBlock.split(/\r?\n/);
-  while (lines.length && lines[0].trim().length === 0) {
-    lines.shift();
-  }
-  while (lines.length && lines[lines.length - 1].trim().length === 0) {
-    lines.pop();
-  }
-  if (lines.length && lines[0].trim() === '### Issue Description') {
-    lines.shift();
-    while (lines.length && lines[0].trim().length === 0) {
-      lines.shift();
-    }
-  }
-  return lines.join('\n');
-}
-
 async function buildSummary(
   templatePath: string,
   summaryPath: string,
@@ -339,28 +299,6 @@ async function buildSummary(
   await fs.writeFile(summaryPath, rendered, 'utf8');
   return rendered;
 }
-
-function removeIssueDescriptionSection(content: string): string {
-  const lines = content.split(/\r?\n/);
-  const result: string[] = [];
-  let skipping = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!skipping && line.trim() === '## Issue Description') {
-      skipping = true;
-      continue;
-    }
-    if (skipping) {
-      if (line.trim().length === 0) {
-        skipping = false;
-      }
-      continue;
-    }
-    result.push(line);
-  }
-  return result.join('\n');
-}
-
 async function postRunChecks(
   lintCommand: string,
   testCommand: string,
@@ -517,6 +455,8 @@ async function createOrUpdatePullRequest(
   if (existing.data.length > 0) {
     const prNumber = existing.data[0].number;
     const {head: _head, draft: _draft, ...updateParams} = prParams;
+    void _head;
+    void _draft;
     await octokit.rest.pulls.update({
       ...updateParams,
       pull_number: prNumber
@@ -601,25 +541,6 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
   core.endGroup();
 }
 
-function buildArtifactName(itemCounter: string): string {
-  const prefix = 'autofix-';
-  const suffix = '-artifacts';
-  const MAX_ARTIFACT_NAME_LENGTH = 64;
-
-  const sanitizedCounter = itemCounter
-    .replace(/[^a-zA-Z0-9_-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-+|-+$/g, '');
-
-  const safeCounter = sanitizedCounter.length > 0 ? sanitizedCounter : 'item';
-
-  const maxCounterLength = MAX_ARTIFACT_NAME_LENGTH - (prefix.length + suffix.length);
-  const truncatedCounter = maxCounterLength > 0 ? safeCounter.slice(0, maxCounterLength) : safeCounter;
-  const finalCounter = truncatedCounter.replace(/^-+|-+$/g, '') || 'item';
-
-  return `${prefix}${finalCounter}${suffix}`;
-}
-
 async function cleanup(workspace: string): Promise<void> {
   core.startGroup('Cleanup');
   const pathsToRemove = [
@@ -644,4 +565,4 @@ async function cleanup(workspace: string): Promise<void> {
   core.endGroup();
 }
 
-run();
+void run();
