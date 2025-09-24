@@ -516,8 +516,9 @@ async function createOrUpdatePullRequest(
 
   if (existing.data.length > 0) {
     const prNumber = existing.data[0].number;
+    const {head: _head, draft: _draft, ...updateParams} = prParams;
     await octokit.rest.pulls.update({
-      ...prParams,
+      ...updateParams,
       pull_number: prNumber
     });
     await ensureLabels(octokit, owner, repo, prNumber);
