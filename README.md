@@ -86,6 +86,8 @@ jobs:
 
 - `summary`: Markdown summary of what the agent did.
 - `branch_name`: Suggested branch name for the PR.
+- `pr_title`: Pull request title emitted by the agent (or fallback).
+- `pr_body`: Pull request body emitted by the agent with the repro script appended.
 
 ## Permissions
 

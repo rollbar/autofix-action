@@ -1,30 +1,19 @@
+# Situation
+
 You are a coding agent running in a GitHub Actions job for this repository.
-You must diagnose and solve Rollbar item #{{ITEM_COUNTER}}.
 
-Before making any code changes, print a short, structured issue description so humans can quickly understand the problem.
-Print exactly the following boundary markers around the description so the workflow can extract it (keep it under ~120 words):
-=== ISSUE DESCRIPTION START ===
+# Task
 
-### Issue Description
+Follow steps 1, 2, 3 and 4 of the process defined below for Rollbar item #{{ITEM_COUNTER}.
 
-- Reproduction Steps: <concrete steps a user would take>
-- Affected Area: <part(s) of the app impacted>
-- Impact: <who is impacted and how severely>
-- Apparent Root Cause: <one-sentence hypothesis, based on evidence>
-=== ISSUE DESCRIPTION END ===
-Ensure each bullet is concise, actionable, and uses information from the Rollbar item and last occurrence (stack trace, request info, params, etc.).
-After printing the Issue Description block, immediately continue with the Objectives below in the same run. Do not stop or wait for further instructions.
+# Error Resolution Process
 
-Objectives (in order):
+## Tools, code and data available:
 
-1. Investigate and debug the issue to determine the root cause (not just the symptom).
-2. Create a reproducible, end-to-end script (e.g., `scripts/autofix_repro.sh` or similar) that reproduces the failure deterministically.
-3. Add or update unit/integration tests in the repo that clearly reproduce the issue.
-4. Implement a fix that addresses the root cause appropriately (avoid band-aid fixes that mask symptoms).
-5. Keep changes as small as reasonably possible while still fixing the root cause; prefer targeted changes over broad refactors.
-6. If a proper fix is infeasible (e.g., requires a major redesign or unavailable context), produce a document `AUTOFIX_PLAN.md` with a concrete plan to carry the issue forward for a human-supervised follow-up (steps, rationale, risks, estimated scope).
+- Code in the current working directory
+- Rollbar data via the Rollbar MCP
 
-Tools and context:
+Notes:
 
 - Use the MCP server named `rollbar` and call `get-item-details(counter={{ITEM_COUNTER}})` to fetch detailed context (item + last occurrence).
 - Use the stack trace and frames to focus your search; read all relevant files.
@@ -36,18 +25,51 @@ Repository hints:
 - Lint command: `{{LINT_COMMAND}}` (optional)
 - Test command: `{{TEST_COMMAND}}` (optional)
 
-Constraints:
+## Step 1: Understand the error
 
-- Modify workspace files directly; do not commit or open PRs (the workflow handles that).
-- Prefer new or updated tests that run under the repo’s existing test framework; if unavailable, create a simple shell script at `scripts/autofix_repro.sh` (make it executable) that reproduces the issue end to end.
-- Respect coding style and project conventions.
-- Avoid broad refactors unless strictly necessary to fix the root cause.
+1.a. Understand how to reproduce the error, as a user of the system.
+- How can the error be reproduced in production?
+- How can the error be reproduced in a development environment?
+- Provide a test to reproduce the issue in a development environment, preferably an end-to-end or integration test .
+1.b. Understand what happens when the error occurs:
+- Effect and impact: When the error occurs, what happens; what's different than when the error is not triggered? (For example, does a user see an error message; does a user experience buggy behavior like clicking and nothing happening; is data in a backend processed lost; is data corrupted or exposed).
+- Severity: What is the severity of the effect/impact each time it occurs?
+1.c. Understand why the error is occurring:
+- What are the conditions that make the error occur?
+- Why are those conditions present?
+- Why does an error occur when those conditions are present?
+1.d. Form and test hypotheses:
+There may be multiple levels of cause, e.g. a proximate cause (what broke) and a systemic cause (why that broke). If multiple levels can be identified, identify up to 5.
+- What are possible causes (hypotheses)?	
+- What evidence exists, or could be gathered, to confirm or falsify each hypothesis?
 
-Deliverables:
+## Step 2: Generate alternatives to solve the error
 
-- Applied code changes that fix the root cause (or `AUTOFIX_PLAN.md` if a fix is not feasible now).
-- A reproducible script (`scripts/autofix_repro.sh`) when appropriate.
-- Added/updated tests demonstrating the issue and verifying the fix.
-- Echo a concise summary of changes at the end of execution.
+2.a. For each root cause, identify one or more alternatives to solve the issue.
+2.b. For each alternative, estimate the work required: what needs to be changed, and how large is the change. If a code change is involved, estimate the size of the code change in total lines changed. Changes that require refactors should not be disqualified.
+2.c. Identify pros and cons of each alternative.
+
+## Step 3: Select root cause(s) to solve and for each, the alternative to implement.
+
+Choose which root cause(s) to solve and the alternative to implement, and explain why this choice, taking into account the following guidelines:
+Prefer maximum change size of approximately 1000 lines
+
+## Step 4: Implement the fixes and submit for review.
+
+Implement each fix. Submit the fixes as a single pull request.
+
+The pull request should have a meaningful title, and should have a body which follows the repository pull request template. In the body, be sure to include the relevant analysis performed in the prior steps, so that a reviewer can fully understand and verify the process that led to the changes being proposed.
+
+## Step 5: Validate post-merge.
+
+After each PR has been merged, use fresh Rollbar data to validate whether the expected result has been achieved (i.e. error rate dropped to zero, error rate reduced, etc.). Write these results as a comment on the PR.
+
+# Deliverables
+
+- File _pr_title.md - file containing only the pull request title 
+- File _pr_body.md - file containing only the pull request body
+- Other files added/removed/changed as needed in the current working directory
+
+The workflow will handle opening the PR.
 
 Note: If you cannot land code changes in this run, you must still create `AUTOFIX_PLAN.md` so the workflow has repository changes to open a PR with.

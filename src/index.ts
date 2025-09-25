@@ -14,6 +14,10 @@ import {
   removeIssueDescriptionSection
 } from './utils';
 
+const PR_TITLE_FILENAME = '_pr_title.md';
+const PR_BODY_FILENAME = '_pr_body.md';
+const SUMMARY_FILENAME = '_autofix_summary.md';
+
 interface Inputs {
   openaiApiKey: string;
   rollbarAccessToken: string;
@@ -64,12 +68,13 @@ async function run(): Promise<void> {
 
     const issueDescription = await extractIssueDescription(codexLogPath, workspace);
 
-    const summaryPath = path.join(workspace, '_autofix_summary.md');
-    let summaryContent = await buildSummary(
+    const summaryPath = path.join(workspace, SUMMARY_FILENAME);
+    const {title: prTitle, body: prBody} = await preparePullRequestContent(
+      workspace,
       prTemplatePath,
-      summaryPath,
       issueDescription,
-      inputs
+      inputs,
+      summaryPath
     );
 
     const lintLogPath = path.join(workspace, '_lint.log');
@@ -85,12 +90,13 @@ async function run(): Promise<void> {
       workspace
     );
 
+    let summaryContent = prBody;
     summaryContent = await appendReproScript(summaryPath, workspace, summaryContent);
     await excludeEphemeralFiles(workspace);
 
     const branchName = await createOrUpdatePullRequest(
+      prTitle,
       summaryContent,
-      summaryPath,
       inputs,
       workspace
     );
@@ -101,6 +107,8 @@ async function run(): Promise<void> {
     if (branchName) {
       core.setOutput('branch_name', branchName);
     }
+    core.setOutput('pr_title', prTitle);
+    core.setOutput('pr_body', summaryContent);
     core.setOutput('summary', summaryContent);
   } catch (error) {
     if (error instanceof Error) {
@@ -275,6 +283,73 @@ async function extractIssueDescription(
 
   return extracted;
 }
+
+async function preparePullRequestContent(
+  workspace: string,
+  prTemplatePath: string,
+  issueDescription: string,
+  inputs: Inputs,
+  summaryPath: string
+): Promise<{title: string; body: string}> {
+  const titlePath = path.join(workspace, PR_TITLE_FILENAME);
+  const bodyPath = path.join(workspace, PR_BODY_FILENAME);
+
+  const titleFromFile = await readOptionalFile(titlePath);
+  const bodyFromFile = await readOptionalFile(bodyPath);
+
+  let title = titleFromFile?.trim() ?? '';
+  let body = bodyFromFile ?? '';
+
+  let usedFallback = false;
+
+  if (!title) {
+    title = `Fix: Rollbar item ${inputs.itemCounter}`;
+    usedFallback = true;
+  }
+
+  if (!body.trim()) {
+    body = await buildSummary(prTemplatePath, summaryPath, issueDescription, inputs);
+    usedFallback = true;
+  } else {
+    await fs.writeFile(summaryPath, body, 'utf8');
+  }
+
+  if (!titleFromFile || !titleFromFile.trim()) {
+    await fs.writeFile(titlePath, `${title}\n`, 'utf8');
+  }
+
+  if (!bodyFromFile || !bodyFromFile.trim()) {
+    await fs.writeFile(bodyPath, body, 'utf8');
+  }
+
+  if (usedFallback) {
+    core.info('PR title/body not provided by agent; using fallback template content.');
+  } else {
+    core.info('Using PR title/body from agent-generated files.');
+  }
+
+  return {title, body};
+}
+
+async function readOptionalFile(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    if (isEnoent(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function isEnoent(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === 'ENOENT'
+  );
+}
 async function buildSummary(
   templatePath: string,
   summaryPath: string,
@@ -372,11 +447,13 @@ async function excludeEphemeralFiles(workspace: string): Promise<void> {
   const excludePath = path.join(infoDir, 'exclude');
   const entries = [
     '.autofix_task.md',
-    '_autofix_summary.md',
+    SUMMARY_FILENAME,
     '_diff.patch',
     '_issue_description.md',
     '_lint.log',
     '_test.log',
+    PR_TITLE_FILENAME,
+    PR_BODY_FILENAME,
     'scripts/autofix_repro.sh'
   ];
   const lines = entries.map(entry => `/${entry}`);
@@ -388,19 +465,21 @@ async function excludeEphemeralFiles(workspace: string): Promise<void> {
     '-f',
     '--ignore-unmatch',
     '.autofix_task.md',
-    '_autofix_summary.md',
+    SUMMARY_FILENAME,
     '_diff.patch',
     '_issue_description.md',
     '_lint.log',
     '_test.log',
+    PR_TITLE_FILENAME,
+    PR_BODY_FILENAME,
     'scripts/autofix_repro.sh'
   ];
   await exec.exec('git', args, {cwd: workspace, ignoreReturnCode: true});
 }
 
 async function createOrUpdatePullRequest(
-  summaryContent: string,
-  summaryPath: string,
+  prTitle: string,
+  prBody: string,
   inputs: Inputs,
   workspace: string
 ): Promise<string> {
@@ -441,14 +520,13 @@ async function createOrUpdatePullRequest(
     head
   });
 
-  const prTitle = `Fix: Rollbar item ${inputs.itemCounter}`;
   const prParams = {
     owner,
     repo,
     title: prTitle,
     head: branchName,
     base: inputs.prBase,
-    body: await fs.readFile(summaryPath, 'utf8'),
+    body: prBody,
     draft: true
   };
 
@@ -507,7 +585,7 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
   core.startGroup('Upload AutoFix artifacts');
   const artifactClient = new DefaultArtifactClient();
   const files = [
-    '_autofix_summary.md',
+    SUMMARY_FILENAME,
     '_issue_description.md',
     '_diff.patch',
     '_lint.log',
@@ -516,6 +594,8 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
     '_mcp_err.log',
     '_item_raw.json',
     'AUTOFIX_PLAN.md',
+    PR_TITLE_FILENAME,
+    PR_BODY_FILENAME,
     path.join('scripts', 'autofix_repro.sh')
   ]
     .map(file => path.join(workspace, file))
@@ -545,7 +625,7 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
 async function cleanup(workspace: string): Promise<void> {
   core.startGroup('Cleanup');
   const pathsToRemove = [
-    '_autofix_summary.md',
+    SUMMARY_FILENAME,
     '_item_raw.json',
     '_mcp_err.log',
     '.autofix_mcp',
@@ -554,7 +634,9 @@ async function cleanup(workspace: string): Promise<void> {
     '_lint.log',
     '_test.log',
     '_diff.patch',
-    'codex_exec.log'
+    'codex_exec.log',
+    PR_TITLE_FILENAME,
+    PR_BODY_FILENAME
   ];
 
   for (const relPath of pathsToRemove) {
