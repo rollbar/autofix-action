@@ -156,7 +156,7 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
     '[profiles.ci]',
     'approval-policy = "never"',
     'sandbox_mode = "workspace-write"',
-    'model = "gpt-5"',
+    'model = "gpt-5-codex"',
     'cd = "."',
     '',
     '[mcp_servers.rollbar]',
@@ -228,9 +228,7 @@ async function runCodexExec(
     '-C',
     workspace,
     '--model',
-    'gpt-5',
-    '--config',
-    'model_reasoning_effort=high',
+    'gpt-5-codex',
     '--',
     taskContent
   ];
