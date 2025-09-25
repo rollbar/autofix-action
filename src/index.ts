@@ -142,7 +142,7 @@ function getInputs(): Inputs {
 
 async function installCliTools(): Promise<void> {
   core.startGroup('Install Codex CLI and Rollbar MCP');
-  await exec.exec('npm', ['install', '-g', '@openai/codex@0.31.0']);
+  await exec.exec('npm', ['install', '-g', '@openai/codex@0.41.0']);
   await exec.exec('npm', ['install', '-g', '@rollbar/mcp-server']);
   core.endGroup();
 }
