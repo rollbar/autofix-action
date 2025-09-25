@@ -8,6 +8,7 @@ Create the following workflow as `.github/workflows/rollbar-autofix.yml`:
 
 ```yaml
 name: Rollbar Autofix
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('Fix Rollbar Item #{0}', github.event.inputs.item_counter) || github.event.client_payload.item_counter && format('Fix Rollbar Item #{0}', github.event.client_payload.item_counter) || github.head_ref && format('Fix Rollbar Item {0}', github.head_ref) || format('Fix Rollbar Item #{0}', github.run_number) }}"
 
 
 on:
@@ -60,7 +61,7 @@ jobs:
           rollbar_access_token: ${{ secrets.ROLLBAR_AUTOFIX_ACCESS_TOKEN }}
           github_token: ${{ secrets.ROLLBAR_AUTOFIX_GITHUB_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
-          item_counter: ${{ inputs.item_counter || github.event.client_payload.item_counter }}
+          item_counter: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.item_counter || github.event.client_payload.item_counter }}
           environment: production
           language: python 3.10, node 16
           test_command: npm test --silent
