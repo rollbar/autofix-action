@@ -340,12 +340,13 @@ async function readOptionalFile(filePath: string): Promise<string | undefined> {
   }
 }
 
-function isEnoent(error: unknown): error is NodeJS.ErrnoException {
+function isEnoent(error: unknown): error is Error & {code?: string} {
   return (
     typeof error === 'object' &&
     error !== null &&
     'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT'
+    typeof (error as {code?: unknown}).code === 'string' &&
+    (error as {code: string}).code === 'ENOENT'
   );
 }
 async function buildSummary(
