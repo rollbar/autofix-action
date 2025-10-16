@@ -84414,7 +84414,8 @@ async function run() {
         const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
         const actionPath = process.env.GITHUB_ACTION_PATH ?? path.resolve(__dirname, '..');
         await installCliTools();
-        await writeCodexConfig(inputs.rollbarAccessToken, workspace);
+        setProcessApiKey(inputs.openaiApiKey);
+        await writeCodexConfig(inputs.rollbarAccessToken, workspace, inputs.openaiApiKey);
         const prTemplatePath = await resolveTemplatePath(workspace, actionPath, 'pr-template.md');
         const aggregateLogPath = path.join(workspace, AGGREGATE_LOG_FILENAME);
         await fs_2.promises.writeFile(aggregateLogPath, '', 'utf8');
@@ -84491,13 +84492,14 @@ async function installCliTools() {
     await exec.exec('npm', ['install', '-g', '@rollbar/mcp-server']);
     core.endGroup();
 }
-async function writeCodexConfig(rollbarAccessToken, workspace) {
+async function writeCodexConfig(rollbarAccessToken, workspace, openaiApiKey) {
     core.startGroup('Write Codex configuration');
     const codexDir = path.join(os.homedir(), '.codex');
     await fs_2.promises.mkdir(codexDir, { recursive: true });
     const configPath = path.join(codexDir, 'config.toml');
     const lines = [
         '[profiles.ci]',
+        `api_key = "${openaiApiKey}"`,
         'approval-policy = "never"',
         'sandbox_mode = "workspace-write"',
         'model = "gpt-5-codex"',
@@ -84517,6 +84519,15 @@ async function writeCodexConfig(rollbarAccessToken, workspace) {
     await fs_2.promises.writeFile(configPath, lines.join('\n'), 'utf8');
     core.info('Codex config written to ~/.codex/config.toml (token redacted)');
     core.endGroup();
+}
+function setProcessApiKey(openaiApiKey) {
+    if (openaiApiKey) {
+        process.env.OPENAI_API_KEY = openaiApiKey;
+        core.info(`OpenAI API key detected (length=${openaiApiKey.length}).`);
+    }
+    else {
+        core.warning('OpenAI API key missing or empty; Codex requests will fail.');
+    }
 }
 async function resolveTemplatePath(workspace, actionPath, filename) {
     const overridePath = path.join(workspace, '.github', 'rollbar-autofix', filename);

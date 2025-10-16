@@ -71,7 +71,8 @@ async function run(): Promise<void> {
     const actionPath = process.env.GITHUB_ACTION_PATH ?? path.resolve(__dirname, '..');
 
     await installCliTools();
-    await writeCodexConfig(inputs.rollbarAccessToken, workspace);
+    setProcessApiKey(inputs.openaiApiKey);
+    await writeCodexConfig(inputs.rollbarAccessToken, workspace, inputs.openaiApiKey);
 
     const prTemplatePath = await resolveTemplatePath(
       workspace,
@@ -196,13 +197,18 @@ async function installCliTools(): Promise<void> {
   core.endGroup();
 }
 
-async function writeCodexConfig(rollbarAccessToken: string, workspace: string): Promise<void> {
+async function writeCodexConfig(
+  rollbarAccessToken: string,
+  workspace: string,
+  openaiApiKey: string
+): Promise<void> {
   core.startGroup('Write Codex configuration');
   const codexDir = path.join(os.homedir(), '.codex');
   await fs.mkdir(codexDir, {recursive: true});
   const configPath = path.join(codexDir, 'config.toml');
   const lines: string[] = [
     '[profiles.ci]',
+    `api_key = "${openaiApiKey}"`,
     'approval-policy = "never"',
     'sandbox_mode = "workspace-write"',
     'model = "gpt-5-codex"',
@@ -224,6 +230,15 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
   await fs.writeFile(configPath, lines.join('\n'), 'utf8');
   core.info('Codex config written to ~/.codex/config.toml (token redacted)');
   core.endGroup();
+}
+
+function setProcessApiKey(openaiApiKey: string): void {
+  if (openaiApiKey) {
+    process.env.OPENAI_API_KEY = openaiApiKey;
+    core.info(`OpenAI API key detected (length=${openaiApiKey.length}).`);
+  } else {
+    core.warning('OpenAI API key missing or empty; Codex requests will fail.');
+  }
 }
 
 async function resolveTemplatePath(
