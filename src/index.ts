@@ -161,7 +161,7 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
     '',
     '[mcp_servers.rollbar]',
     'command = "npx"',
-    'args = ["-y", "@rollbar/mcp-server"]',
+    'args = ["-y", "@rollbar/mcp-server@0.3.0"]',
     '',
     '[mcp_servers.rollbar.env]',
     `ROLLBAR_ACCESS_TOKEN = "${rollbarAccessToken}"`
