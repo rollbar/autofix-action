@@ -93,7 +93,7 @@ The pull request should have a clearly-written body that makes the PR easy to re
 
 ## Step 6: Validate post-merge.
 
-After each PR has been merged, use fresh Rollbar data to validate whether the expected result has been achieved (i.e. error rate dropped to zero, error rate reduced, etc.). Write these results as a comment on the PR.
+After the PR has been merged, use fresh Rollbar data to validate whether the expected result has been achieved (i.e. error rate dropped to zero, error rate reduced, etc.). Write these results as a comment on the PR.
 
 # Deliverables
 

@@ -238,6 +238,7 @@ async function runCodexExec(
     env,
     cwd: workspace,
     ignoreReturnCode: true,
+    silent: true,
     listeners: {
       stdout: (data: Buffer) => {
         process.stdout.write(data);
