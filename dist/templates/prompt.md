@@ -4,7 +4,7 @@ You are a coding agent running in a GitHub Actions job for this repository.
 
 # Task
 
-Follow steps 1 through 5 of the process defined below for Rollbar item #{{ITEM_COUNTER}.
+Follow steps 1 through 5 of the process defined below for Rollbar item #{{ITEM_COUNTER}}.
 
 # Error Resolution Process
 
