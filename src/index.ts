@@ -294,7 +294,6 @@ async function runCodexStage(
     env,
     cwd: workspace,
     ignoreReturnCode: true,
-    silent: true,
     listeners: {
       stdout: (data: Buffer) => {
         process.stdout.write(data);
@@ -630,8 +629,7 @@ async function updateRemoteWithToken(token: string, workspace: string): Promise<
   const {owner, repo} = github.context.repo;
   const remoteUrl = `https://x-access-token:${token}@github.com/${owner}/${repo}.git`;
   await exec.exec('git', ['remote', 'set-url', 'origin', remoteUrl], {
-    cwd: workspace,
-    silent: true
+    cwd: workspace
   });
   core.info('Updated git remote with authentication token.');
 }
