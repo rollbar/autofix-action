@@ -161,7 +161,7 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
     '',
     '[mcp_servers.rollbar]',
     'command = "npx"',
-    'args = ["-y", "@rollbar/mcp-server@0.3.0"]',
+    'args = ["-y", "@rollbar/mcp-server"]',
     '',
     '[mcp_servers.rollbar.env]',
     `ROLLBAR_ACCESS_TOKEN = "${rollbarAccessToken}"`
@@ -238,7 +238,6 @@ async function runCodexExec(
     env,
     cwd: workspace,
     ignoreReturnCode: true,
-    silent: true,
     listeners: {
       stdout: (data: Buffer) => {
         process.stdout.write(data);
