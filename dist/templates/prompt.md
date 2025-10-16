@@ -74,7 +74,7 @@ Document the rationale for the choice in markdown table format.
 
 Implement the fix.
 
-If the lint and/or test commands are available, ensure that your changes pass lint and test.
+Ensure your changes pass lint ({{LINT_COMMAND}}).
 
 ## Step 5: Submit changes for review.
 
