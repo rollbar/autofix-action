@@ -593,6 +593,8 @@ async function createOrUpdatePullRequest(
 
   await exec.exec('git', ['checkout', '-B', branchName], {cwd: workspace});
 
+  await removeAutofixPlanIfCodeChanges(workspace);
+
   await exec.exec('git', ['add', '--all'], {cwd: workspace});
   const status = await exec.getExecOutput('git', ['status', '--porcelain'], {cwd: workspace});
   if (!status.stdout.trim()) {
@@ -752,3 +754,30 @@ async function cleanup(workspace: string): Promise<void> {
 }
 
 void run();
+
+async function removeAutofixPlanIfCodeChanges(workspace: string): Promise<void> {
+  const planPath = path.join(workspace, 'AUTOFIX_PLAN.md');
+  if (!existsSync(planPath)) {
+    return;
+  }
+
+  const statusOutput = await exec.getExecOutput('git', ['status', '--porcelain'], {
+    cwd: workspace
+  });
+  const lines = statusOutput.stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const hasPlanEntry = lines.some(line => line.includes('AUTOFIX_PLAN.md'));
+  const hasOtherChanges = lines.some(line => !line.includes('AUTOFIX_PLAN.md'));
+
+  if (hasPlanEntry && hasOtherChanges) {
+    core.info('Removing AUTOFIX_PLAN.md because code changes were produced.');
+    await io.rmRF(planPath);
+    await exec.exec('git', ['rm', '--cached', '--ignore-unmatch', 'AUTOFIX_PLAN.md'], {
+      cwd: workspace,
+      ignoreReturnCode: true
+    });
+  }
+}
