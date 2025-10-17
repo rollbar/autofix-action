@@ -170,7 +170,7 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
   }
 
   await fs.writeFile(configPath, lines.join('\n'), 'utf8');
-  core.info('Codex config written to ~/.codex/config.toml (token redacted)');
+  core.info('Codex config written to ~/.codex/config.toml');
   core.endGroup();
 }
 
@@ -209,7 +209,6 @@ async function runCodexExec(
   workspace: string
 ): Promise<void> {
   const taskContent = await fs.readFile(taskFile, 'utf8');
-  const logStream = createWriteStream(logPath, {flags: 'w', encoding: 'utf8'});
   const env = {
     ...process.env,
     OPENAI_API_KEY: inputs.openaiApiKey,
@@ -217,6 +216,26 @@ async function runCodexExec(
     CI: '1',
     TERM: 'dumb'
   };
+
+  core.startGroup('Codex Login');
+  let loginExitCode = 0;
+  try {
+    loginExitCode = await exec.exec('codex', ['login', '--with-api-key'], {
+      env,
+      cwd: workspace,
+      input: Buffer.from(inputs.openaiApiKey, 'utf8'),
+      ignoreReturnCode: true
+    });
+    core.info(`codex login exit code: ${loginExitCode}`);
+  } finally {
+    core.endGroup();
+  }
+
+  if (loginExitCode !== 0) {
+    throw new Error('codex login failed. Confirm your OPENAI_API_KEY is valid.');
+  }
+
+  const logStream = createWriteStream(logPath, {flags: 'w', encoding: 'utf8'});
   const args = [
     'exec',
     '--sandbox',
@@ -224,7 +243,7 @@ async function runCodexExec(
     '-C',
     workspace,
     '--model',
-    'gpt-5',
+    'gpt-5-codex',
     '--',
     taskContent
   ];
