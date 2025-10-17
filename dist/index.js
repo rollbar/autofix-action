@@ -84416,6 +84416,7 @@ async function run() {
         await installCliTools();
         setProcessApiKey(inputs.openaiApiKey);
         await writeCodexConfig(inputs.rollbarAccessToken, workspace, inputs.openaiApiKey);
+        core.info(`process.env.OPENAI_API_KEY present: ${Boolean(process.env.OPENAI_API_KEY)}`);
         const prTemplatePath = await resolveTemplatePath(workspace, actionPath, 'pr-template.md');
         const aggregateLogPath = path.join(workspace, AGGREGATE_LOG_FILENAME);
         await fs_2.promises.writeFile(aggregateLogPath, '', 'utf8');
@@ -84517,7 +84518,7 @@ async function writeCodexConfig(rollbarAccessToken, workspace, openaiApiKey) {
         lines.push('', `[projects."${workspacePath}"]`, 'trust_level = "trusted"');
     }
     await fs_2.promises.writeFile(configPath, lines.join('\n'), 'utf8');
-    core.info('Codex config written to ~/.codex/config.toml (token redacted)');
+    core.info(`Codex config written to ~/.codex/config.toml (token redacted, length=${openaiApiKey.length}).`);
     core.endGroup();
 }
 function setProcessApiKey(openaiApiKey) {
@@ -84575,6 +84576,7 @@ async function runCodexStage(inputs, taskFile, stageLogPath, aggregateLogPath, w
         taskContent
     ];
     core.startGroup(`Run Codex Stage: ${stageDisplayName}`);
+    core.info(`Launching Codex stage "${stageDisplayName}" with OPENAI_API_KEY length ${env.OPENAI_API_KEY?.length ?? 0}.`);
     const exitCode = await exec.exec('codex', args, {
         env,
         cwd: workspace,
