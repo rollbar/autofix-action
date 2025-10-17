@@ -210,7 +210,6 @@ async function writeCodexConfig(
   const configPath = path.join(codexDir, 'config.toml');
   const lines: string[] = [
     '[profiles.ci]',
-    `api_key = "${openaiApiKey}"`,
     'approval-policy = "never"',
     'sandbox_mode = "workspace-write"',
     'model = "gpt-5-codex"',
@@ -218,7 +217,7 @@ async function writeCodexConfig(
     '',
     '[mcp_servers.rollbar]',
     'command = "npx"',
-    'args = ["-y", "@rollbar/mcp-server@0.3.0"]',
+    'args = ["-y", "@rollbar/mcp-server"]',
     '',
     '[mcp_servers.rollbar.env]',
     `ROLLBAR_ACCESS_TOKEN = "${rollbarAccessToken}"`
