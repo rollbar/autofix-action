@@ -17,6 +17,39 @@ import {
 const PR_TITLE_FILENAME = '_pr_title.md';
 const PR_BODY_FILENAME = '_pr_body.md';
 const SUMMARY_FILENAME = '_autofix_summary.md';
+const AGGREGATE_LOG_FILENAME = 'codex_exec.log';
+
+interface StageConfig {
+  key: string;
+  displayName: string;
+  template: string;
+  taskFilename: string;
+  logFilename: string;
+}
+
+const STAGES: StageConfig[] = [
+  {
+    key: 'analyze',
+    displayName: 'Analyze Issue',
+    template: 'prompt-analyze.md',
+    taskFilename: '.autofix_task.md',
+    logFilename: 'codex_analyze.log'
+  },
+  {
+    key: 'implement',
+    displayName: 'Implement Fix',
+    template: 'prompt-implement.md',
+    taskFilename: '.autofix_task_implement.md',
+    logFilename: 'codex_implement.log'
+  },
+  {
+    key: 'ensure-checks',
+    displayName: 'Ensure Checks Pass',
+    template: 'prompt-ensure-checks.md',
+    taskFilename: '.autofix_task_checks.md',
+    logFilename: 'codex_checks.log'
+  }
+];
 
 interface Inputs {
   openaiApiKey: string;
@@ -40,33 +73,51 @@ async function run(): Promise<void> {
     await installCliTools();
     await writeCodexConfig(inputs.rollbarAccessToken, workspace);
 
-    const taskFile = path.join(workspace, '.autofix_task.md');
-    const promptTemplatePath = await resolveTemplatePath(
-      workspace,
-      actionPath,
-      'prompt.md'
-    );
-    const promptTemplate = await fs.readFile(promptTemplatePath, 'utf8');
-    const promptContent = applyTemplate(promptTemplate, {
-      ITEM_COUNTER: inputs.itemCounter,
-      ENVIRONMENT: inputs.environment,
-      LANGUAGE: inputs.language,
-      TEST_COMMAND: inputs.testCommand,
-      LINT_COMMAND: inputs.lintCommand,
-      MAX_ITERATIONS: inputs.maxIterations
-    });
-    await fs.writeFile(taskFile, promptContent, 'utf8');
-
     const prTemplatePath = await resolveTemplatePath(
       workspace,
       actionPath,
       'pr-template.md'
     );
 
-    const codexLogPath = path.join(workspace, 'codex_exec.log');
-    await runCodexExec(inputs, taskFile, codexLogPath, workspace);
+    const aggregateLogPath = path.join(workspace, AGGREGATE_LOG_FILENAME);
+    await fs.writeFile(aggregateLogPath, '', 'utf8');
 
-    const issueDescription = await extractIssueDescription(codexLogPath, workspace);
+    await loginToCodex(inputs, workspace);
+
+    const stageLogs: Record<string, string> = {};
+
+    for (const stage of STAGES) {
+      const taskFilePath = path.join(workspace, stage.taskFilename);
+      const promptTemplatePath = await resolveTemplatePath(
+        workspace,
+        actionPath,
+        stage.template
+      );
+      const promptTemplate = await fs.readFile(promptTemplatePath, 'utf8');
+      const promptContent = applyTemplate(promptTemplate, {
+        ITEM_COUNTER: inputs.itemCounter,
+        ENVIRONMENT: inputs.environment,
+        LANGUAGE: inputs.language,
+        TEST_COMMAND: inputs.testCommand,
+        LINT_COMMAND: inputs.lintCommand,
+        MAX_ITERATIONS: inputs.maxIterations
+      });
+      await fs.writeFile(taskFilePath, promptContent, 'utf8');
+
+      const stageLogPath = path.join(workspace, stage.logFilename);
+      await runCodexStage(
+        inputs,
+        taskFilePath,
+        stageLogPath,
+        aggregateLogPath,
+        workspace,
+        stage.displayName
+      );
+      stageLogs[stage.key] = stageLogPath;
+    }
+
+    const analyzeLogPath = stageLogs['analyze'] ?? aggregateLogPath;
+    const issueDescription = await extractIssueDescription(analyzeLogPath, workspace);
 
     const summaryPath = path.join(workspace, SUMMARY_FILENAME);
     const {title: prTitle, body: prBody} = await preparePullRequestContent(
@@ -153,8 +204,11 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
   await fs.mkdir(codexDir, {recursive: true});
   const configPath = path.join(codexDir, 'config.toml');
   const lines: string[] = [
-    '[sandbox_workspace_write]',
-    'network_access = true',
+    '[profiles.ci]',
+    'approval-policy = "never"',
+    'sandbox_mode = "workspace-write"',
+    'model = "gpt-5-codex"',
+    'cd = "."',
     '',
     '[mcp_servers.rollbar]',
     'command = "npx"',
@@ -170,7 +224,7 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
   }
 
   await fs.writeFile(configPath, lines.join('\n'), 'utf8');
-  core.info('Codex config written to ~/.codex/config.toml');
+  core.info('Codex config written to ~/.codex/config.toml (token redacted)');
   core.endGroup();
 }
 
@@ -202,17 +256,10 @@ async function resolveTemplatePath(
   return defaultPath;
 }
 
-async function runCodexExec(
-  inputs: Inputs,
-  taskFile: string,
-  logPath: string,
-  workspace: string
-): Promise<void> {
-  const taskContent = await fs.readFile(taskFile, 'utf8');
+async function loginToCodex(inputs: Inputs, workspace: string): Promise<void> {
   const env = {
     ...process.env,
     OPENAI_API_KEY: inputs.openaiApiKey,
-    TASK_FILE: taskFile,
     CI: '1',
     TERM: 'dumb'
   };
@@ -234,12 +281,35 @@ async function runCodexExec(
   if (loginExitCode !== 0) {
     throw new Error('codex login failed. Confirm your OPENAI_API_KEY is valid.');
   }
+}
 
-  const logStream = createWriteStream(logPath, {flags: 'w', encoding: 'utf8'});
+async function runCodexStage(
+  inputs: Inputs,
+  taskFile: string,
+  stageLogPath: string,
+  aggregateLogPath: string,
+  workspace: string,
+  stageDisplayName: string
+): Promise<void> {
+  const taskContent = await fs.readFile(taskFile, 'utf8');
+  const logStream = createWriteStream(stageLogPath, {flags: 'w', encoding: 'utf8'});
+  const aggregateStream = createWriteStream(aggregateLogPath, {
+    flags: 'a',
+    encoding: 'utf8'
+  });
+  aggregateStream.write(`\n===== ${stageDisplayName.toUpperCase()} =====\n`);
+  const env = {
+    ...process.env,
+    OPENAI_API_KEY: inputs.openaiApiKey,
+    TASK_FILE: taskFile,
+    CI: '1',
+    TERM: 'dumb'
+  };
   const args = [
     'exec',
+    '--profile=ci',
     '--sandbox',
-    'danger-full-access', // github actions is already a sandbox
+    'workspace-write',
     '-C',
     workspace,
     '--model',
@@ -248,26 +318,32 @@ async function runCodexExec(
     taskContent
   ];
 
-  core.startGroup('Run Codex AutoFix');
+  core.startGroup(`Run Codex Stage: ${stageDisplayName}`);
   const exitCode = await exec.exec('codex', args, {
     env,
     cwd: workspace,
     ignoreReturnCode: true,
+    silent: true,
     listeners: {
       stdout: (data: Buffer) => {
         process.stdout.write(data);
         logStream.write(data);
+        aggregateStream.write(data);
       },
       stderr: (data: Buffer) => {
         process.stderr.write(data);
         logStream.write(data);
+        aggregateStream.write(data);
       }
     }
   });
   logStream.end();
+  aggregateStream.end();
   core.info(`codex exec exit code: ${exitCode}`);
   if (exitCode !== 0) {
-    throw new Error(`codex exec failed with exit code ${exitCode}. See codex_exec.log for details.`);
+    throw new Error(
+      `codex exec failed in stage "${stageDisplayName}" with exit code ${exitCode}. See ${stageLogPath} for details.`
+    );
   }
   core.endGroup();
 }
@@ -459,16 +535,22 @@ async function excludeEphemeralFiles(workspace: string): Promise<void> {
   const infoDir = path.join(workspace, '.git', 'info');
   await fs.mkdir(infoDir, {recursive: true});
   const excludePath = path.join(infoDir, 'exclude');
+  const stageTaskEntries = STAGES.map(stage => stage.taskFilename);
+  const stageLogEntries = STAGES.map(stage => stage.logFilename);
   const entries = [
-    '.autofix_task.md',
-    SUMMARY_FILENAME,
-    '_diff.patch',
-    '_issue_description.md',
-    '_lint.log',
-    '_test.log',
-    PR_TITLE_FILENAME,
-    PR_BODY_FILENAME,
-    'scripts/autofix_repro.sh'
+    ...new Set([
+      ...stageTaskEntries,
+      ...stageLogEntries,
+      SUMMARY_FILENAME,
+      '_diff.patch',
+      '_issue_description.md',
+      '_lint.log',
+      '_test.log',
+      PR_TITLE_FILENAME,
+      PR_BODY_FILENAME,
+      'scripts/autofix_repro.sh',
+      AGGREGATE_LOG_FILENAME
+    ])
   ];
   const lines = entries.map(entry => `/${entry}`);
   await fs.appendFile(excludePath, `\n${lines.join('\n')}\n`, 'utf8');
@@ -478,7 +560,8 @@ async function excludeEphemeralFiles(workspace: string): Promise<void> {
     '--cached',
     '-f',
     '--ignore-unmatch',
-    '.autofix_task.md',
+    ...stageTaskEntries,
+    ...stageLogEntries,
     SUMMARY_FILENAME,
     '_diff.patch',
     '_issue_description.md',
@@ -486,7 +569,8 @@ async function excludeEphemeralFiles(workspace: string): Promise<void> {
     '_test.log',
     PR_TITLE_FILENAME,
     PR_BODY_FILENAME,
-    'scripts/autofix_repro.sh'
+    'scripts/autofix_repro.sh',
+    AGGREGATE_LOG_FILENAME
   ];
   await exec.exec('git', args, {cwd: workspace, ignoreReturnCode: true});
 }
@@ -598,13 +682,15 @@ async function ensureLabels(
 async function uploadArtifacts(itemCounter: string, workspace: string): Promise<void> {
   core.startGroup('Upload AutoFix artifacts');
   const artifactClient = new DefaultArtifactClient();
+  const stageLogs = STAGES.map(stage => stage.logFilename);
   const files = [
     SUMMARY_FILENAME,
     '_issue_description.md',
     '_diff.patch',
     '_lint.log',
     '_test.log',
-    'codex_exec.log',
+    AGGREGATE_LOG_FILENAME,
+    ...stageLogs,
     '_mcp_err.log',
     '_item_raw.json',
     'AUTOFIX_PLAN.md',
@@ -638,17 +724,20 @@ async function uploadArtifacts(itemCounter: string, workspace: string): Promise<
 
 async function cleanup(workspace: string): Promise<void> {
   core.startGroup('Cleanup');
+  const stageTaskEntries = STAGES.map(stage => stage.taskFilename);
+  const stageLogEntries = STAGES.map(stage => stage.logFilename);
   const pathsToRemove = [
     SUMMARY_FILENAME,
     '_item_raw.json',
     '_mcp_err.log',
     '.autofix_mcp',
     '.mcp.json',
-    '.autofix_task.md',
+    ...stageTaskEntries,
     '_lint.log',
     '_test.log',
     '_diff.patch',
-    'codex_exec.log',
+    AGGREGATE_LOG_FILENAME,
+    ...stageLogEntries,
     PR_TITLE_FILENAME,
     PR_BODY_FILENAME
   ];
