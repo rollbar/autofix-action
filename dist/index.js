@@ -84546,6 +84546,20 @@ if [ "$HTTP_STATUS" != "200" ]; then
   cat "$TMP_RESP"
 fi
 rm -f "$TMP_RESP"
+
+TMP_RESP=$(mktemp)
+BODY='{"model":"gpt-4o-mini","input":"ping"}'
+HTTP_STATUS=$(curl -sS -w "%{http_code}" -o "$TMP_RESP" \\
+  -H "Authorization: Bearer $OPENAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d "$BODY" \\
+  https://api.openai.com/v1/responses || true)
+echo "OpenAI /v1/responses HTTP status: $HTTP_STATUS"
+if [ "$HTTP_STATUS" != "200" ]; then
+  echo "OpenAI /v1/responses error response:"
+  cat "$TMP_RESP"
+fi
+rm -f "$TMP_RESP"
   `.trim();
     const env = {
         ...process.env,
