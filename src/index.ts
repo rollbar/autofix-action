@@ -224,7 +224,7 @@ async function runCodexExec(
     '-C',
     workspace,
     '--model',
-    'gpt-5-codex',
+    'gpt-5',
     '--',
     taskContent
   ];

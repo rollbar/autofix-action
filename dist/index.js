@@ -84519,7 +84519,7 @@ async function runCodexExec(inputs, taskFile, logPath, workspace) {
         '-C',
         workspace,
         '--model',
-        'gpt-5-codex',
+        'gpt-5',
         '--',
         taskContent
     ];
