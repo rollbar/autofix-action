@@ -84416,6 +84416,7 @@ async function run() {
         await installCliTools();
         setProcessApiKey(inputs.openaiApiKey);
         await writeCodexConfig(inputs.rollbarAccessToken, workspace, inputs.openaiApiKey);
+        await verifyOpenAiAccess(inputs.openaiApiKey, workspace);
         core.info(`process.env.OPENAI_API_KEY present: ${Boolean(process.env.OPENAI_API_KEY)}`);
         const prTemplatePath = await resolveTemplatePath(workspace, actionPath, 'pr-template.md');
         const aggregateLogPath = path.join(workspace, AGGREGATE_LOG_FILENAME);
@@ -84529,6 +84530,36 @@ function setProcessApiKey(openaiApiKey) {
     else {
         core.warning('OpenAI API key missing or empty; Codex requests will fail.');
     }
+}
+async function verifyOpenAiAccess(openaiApiKey, workspace) {
+    core.startGroup('Verify OpenAI API key access');
+    const script = `
+set -euo pipefail
+TMP_RESP=$(mktemp)
+HTTP_STATUS=$(curl -sS -w "%{http_code}" -o "$TMP_RESP" \\
+  -H "Authorization: Bearer $OPENAI_API_KEY" \\
+  -H "Content-Type: application/json" \\
+  https://api.openai.com/v1/models || true)
+echo "OpenAI /v1/models HTTP status: $HTTP_STATUS"
+if [ "$HTTP_STATUS" != "200" ]; then
+  echo "OpenAI error response:"
+  cat "$TMP_RESP"
+fi
+rm -f "$TMP_RESP"
+  `.trim();
+    const env = {
+        ...process.env,
+        OPENAI_API_KEY: openaiApiKey
+    };
+    const exitCode = await exec.exec('bash', ['-lc', script], {
+        cwd: workspace,
+        env,
+        ignoreReturnCode: true
+    });
+    if (exitCode !== 0) {
+        core.warning(`OpenAI key verification command exited with code ${exitCode}.`);
+    }
+    core.endGroup();
 }
 async function resolveTemplatePath(workspace, actionPath, filename) {
     const overridePath = path.join(workspace, '.github', 'rollbar-autofix', filename);
