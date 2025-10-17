@@ -142,7 +142,7 @@ function getInputs(): Inputs {
 
 async function installCliTools(): Promise<void> {
   core.startGroup('Install Codex CLI and Rollbar MCP');
-  await exec.exec('npm', ['install', '-g', '@openai/codex@0.41.0']);
+  await exec.exec('npm', ['install', '-g', '@openai/codex@0.46.0']);
   await exec.exec('npm', ['install', '-g', '@rollbar/mcp-server']);
   core.endGroup();
 }
@@ -153,15 +153,12 @@ async function writeCodexConfig(rollbarAccessToken: string, workspace: string): 
   await fs.mkdir(codexDir, {recursive: true});
   const configPath = path.join(codexDir, 'config.toml');
   const lines: string[] = [
-    '[profiles.ci]',
-    'approval-policy = "never"',
-    'sandbox_mode = "workspace-write"',
-    'model = "gpt-5-codex"',
-    'cd = "."',
+    '[sandbox_workspace_write]',
+    'network_access = true',
     '',
     '[mcp_servers.rollbar]',
     'command = "npx"',
-    'args = ["-y", "@rollbar/mcp-server"]',
+    'args = ["-y", "@rollbar/mcp-server@0.3.0"]',
     '',
     '[mcp_servers.rollbar.env]',
     `ROLLBAR_ACCESS_TOKEN = "${rollbarAccessToken}"`
@@ -222,9 +219,8 @@ async function runCodexExec(
   };
   const args = [
     'exec',
-    '--profile=ci',
     '--sandbox',
-    'workspace-write',
+    'danger-full-access', // github actions is already a sandbox
     '-C',
     workspace,
     '--model',
