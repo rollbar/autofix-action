@@ -84384,6 +84384,30 @@ const utils_1 = __nccwpck_require__(71798);
 const PR_TITLE_FILENAME = '_pr_title.md';
 const PR_BODY_FILENAME = '_pr_body.md';
 const SUMMARY_FILENAME = '_autofix_summary.md';
+const AGGREGATE_LOG_FILENAME = 'codex_exec.log';
+const STAGES = [
+    {
+        key: 'analyze',
+        displayName: 'Analyze Issue',
+        template: 'prompt-analyze.md',
+        taskFilename: '.autofix_task.md',
+        logFilename: 'codex_analyze.log'
+    },
+    {
+        key: 'implement',
+        displayName: 'Implement Fix',
+        template: 'prompt-implement.md',
+        taskFilename: '.autofix_task_implement.md',
+        logFilename: 'codex_implement.log'
+    },
+    {
+        key: 'ensure-checks',
+        displayName: 'Ensure Checks Pass',
+        template: 'prompt-ensure-checks.md',
+        taskFilename: '.autofix_task_checks.md',
+        logFilename: 'codex_checks.log'
+    }
+];
 async function run() {
     try {
         const inputs = getInputs();
@@ -84391,22 +84415,30 @@ async function run() {
         const actionPath = process.env.GITHUB_ACTION_PATH ?? path.resolve(__dirname, '..');
         await installCliTools();
         await writeCodexConfig(inputs.rollbarAccessToken, workspace);
-        const taskFile = path.join(workspace, '.autofix_task.md');
-        const promptTemplatePath = await resolveTemplatePath(workspace, actionPath, 'prompt.md');
-        const promptTemplate = await fs_2.promises.readFile(promptTemplatePath, 'utf8');
-        const promptContent = (0, utils_1.applyTemplate)(promptTemplate, {
-            ITEM_COUNTER: inputs.itemCounter,
-            ENVIRONMENT: inputs.environment,
-            LANGUAGE: inputs.language,
-            TEST_COMMAND: inputs.testCommand,
-            LINT_COMMAND: inputs.lintCommand,
-            MAX_ITERATIONS: inputs.maxIterations
-        });
-        await fs_2.promises.writeFile(taskFile, promptContent, 'utf8');
         const prTemplatePath = await resolveTemplatePath(workspace, actionPath, 'pr-template.md');
-        const codexLogPath = path.join(workspace, 'codex_exec.log');
-        await runCodexExec(inputs, taskFile, codexLogPath, workspace);
-        const issueDescription = await extractIssueDescription(codexLogPath, workspace);
+        const aggregateLogPath = path.join(workspace, AGGREGATE_LOG_FILENAME);
+        await fs_2.promises.writeFile(aggregateLogPath, '', 'utf8');
+        await loginToCodex(inputs, workspace);
+        const stageLogs = {};
+        for (const stage of STAGES) {
+            const taskFilePath = path.join(workspace, stage.taskFilename);
+            const promptTemplatePath = await resolveTemplatePath(workspace, actionPath, stage.template);
+            const promptTemplate = await fs_2.promises.readFile(promptTemplatePath, 'utf8');
+            const promptContent = (0, utils_1.applyTemplate)(promptTemplate, {
+                ITEM_COUNTER: inputs.itemCounter,
+                ENVIRONMENT: inputs.environment,
+                LANGUAGE: inputs.language,
+                TEST_COMMAND: inputs.testCommand,
+                LINT_COMMAND: inputs.lintCommand,
+                MAX_ITERATIONS: inputs.maxIterations
+            });
+            await fs_2.promises.writeFile(taskFilePath, promptContent, 'utf8');
+            const stageLogPath = path.join(workspace, stage.logFilename);
+            await runCodexStage(inputs, taskFilePath, stageLogPath, aggregateLogPath, workspace, stage.displayName);
+            stageLogs[stage.key] = stageLogPath;
+        }
+        const analyzeLogPath = stageLogs['analyze'] ?? aggregateLogPath;
+        const issueDescription = await extractIssueDescription(analyzeLogPath, workspace);
         const summaryPath = path.join(workspace, SUMMARY_FILENAME);
         const { title: prTitle, body: prBody } = await preparePullRequestContent(workspace, prTemplatePath, issueDescription, inputs, summaryPath);
         const lintLogPath = path.join(workspace, '_lint.log');
@@ -84456,7 +84488,7 @@ function getInputs() {
 }
 async function installCliTools() {
     core.startGroup('Install Codex CLI and Rollbar MCP');
-    await exec.exec('npm', ['install', '-g', '@openai/codex@0.31.0']);
+    await exec.exec('npm', ['install', '-g', '@openai/codex@0.46.0']);
     await exec.exec('npm', ['install', '-g', '@rollbar/mcp-server']);
     core.endGroup();
 }
@@ -84469,12 +84501,12 @@ async function writeCodexConfig(rollbarAccessToken, workspace) {
         '[profiles.ci]',
         'approval-policy = "never"',
         'sandbox_mode = "workspace-write"',
-        'model = "gpt-5"',
+        'model = "gpt-5-codex"',
         'cd = "."',
         '',
         '[mcp_servers.rollbar]',
         'command = "npx"',
-        'args = ["-y", "@rollbar/mcp-server"]',
+        'args = ["-y", "@rollbar/mcp-server@0.3.0"]',
         '',
         '[mcp_servers.rollbar.env]',
         `ROLLBAR_ACCESS_TOKEN = "${rollbarAccessToken}"`
@@ -84505,9 +84537,39 @@ async function resolveTemplatePath(workspace, actionPath, filename) {
     }
     return defaultPath;
 }
-async function runCodexExec(inputs, taskFile, logPath, workspace) {
+async function loginToCodex(inputs, workspace) {
+    const env = {
+        ...process.env,
+        OPENAI_API_KEY: inputs.openaiApiKey,
+        CI: '1',
+        TERM: 'dumb'
+    };
+    core.startGroup('Codex Login');
+    let loginExitCode = 0;
+    try {
+        loginExitCode = await exec.exec('codex', ['login', '--with-api-key'], {
+            env,
+            cwd: workspace,
+            input: Buffer.from(inputs.openaiApiKey, 'utf8'),
+            ignoreReturnCode: true
+        });
+        core.info(`codex login exit code: ${loginExitCode}`);
+    }
+    finally {
+        core.endGroup();
+    }
+    if (loginExitCode !== 0) {
+        throw new Error('codex login failed. Confirm your OPENAI_API_KEY is valid.');
+    }
+}
+async function runCodexStage(inputs, taskFile, stageLogPath, aggregateLogPath, workspace, stageDisplayName) {
     const taskContent = await fs_2.promises.readFile(taskFile, 'utf8');
-    const logStream = (0, fs_1.createWriteStream)(logPath, { flags: 'w', encoding: 'utf8' });
+    const logStream = (0, fs_1.createWriteStream)(stageLogPath, { flags: 'w', encoding: 'utf8' });
+    const aggregateStream = (0, fs_1.createWriteStream)(aggregateLogPath, {
+        flags: 'a',
+        encoding: 'utf8'
+    });
+    aggregateStream.write(`\n===== ${stageDisplayName.toUpperCase()} =====\n`);
     const env = {
         ...process.env,
         OPENAI_API_KEY: inputs.openaiApiKey,
@@ -84523,32 +84585,34 @@ async function runCodexExec(inputs, taskFile, logPath, workspace) {
         '-C',
         workspace,
         '--model',
-        'gpt-5',
-        '--config',
-        'model_reasoning_effort=high',
+        'gpt-5-codex',
         '--',
         taskContent
     ];
-    core.startGroup('Run Codex AutoFix');
+    core.startGroup(`Run Codex Stage: ${stageDisplayName}`);
     const exitCode = await exec.exec('codex', args, {
         env,
         cwd: workspace,
         ignoreReturnCode: true,
+        silent: true,
         listeners: {
             stdout: (data) => {
                 process.stdout.write(data);
                 logStream.write(data);
+                aggregateStream.write(data);
             },
             stderr: (data) => {
                 process.stderr.write(data);
                 logStream.write(data);
+                aggregateStream.write(data);
             }
         }
     });
     logStream.end();
+    aggregateStream.end();
     core.info(`codex exec exit code: ${exitCode}`);
     if (exitCode !== 0) {
-        throw new Error(`codex exec failed with exit code ${exitCode}. See codex_exec.log for details.`);
+        throw new Error(`codex exec failed in stage "${stageDisplayName}" with exit code ${exitCode}. See ${stageLogPath} for details.`);
     }
     core.endGroup();
 }
@@ -84618,6 +84682,7 @@ function isEnoent(error) {
     return (typeof error === 'object' &&
         error !== null &&
         'code' in error &&
+        typeof error.code === 'string' &&
         error.code === 'ENOENT');
 }
 async function buildSummary(templatePath, summaryPath, issueDescription, inputs) {
@@ -84692,16 +84757,22 @@ async function excludeEphemeralFiles(workspace) {
     const infoDir = path.join(workspace, '.git', 'info');
     await fs_2.promises.mkdir(infoDir, { recursive: true });
     const excludePath = path.join(infoDir, 'exclude');
+    const stageTaskEntries = STAGES.map(stage => stage.taskFilename);
+    const stageLogEntries = STAGES.map(stage => stage.logFilename);
     const entries = [
-        '.autofix_task.md',
-        SUMMARY_FILENAME,
-        '_diff.patch',
-        '_issue_description.md',
-        '_lint.log',
-        '_test.log',
-        PR_TITLE_FILENAME,
-        PR_BODY_FILENAME,
-        'scripts/autofix_repro.sh'
+        ...new Set([
+            ...stageTaskEntries,
+            ...stageLogEntries,
+            SUMMARY_FILENAME,
+            '_diff.patch',
+            '_issue_description.md',
+            '_lint.log',
+            '_test.log',
+            PR_TITLE_FILENAME,
+            PR_BODY_FILENAME,
+            'scripts/autofix_repro.sh',
+            AGGREGATE_LOG_FILENAME
+        ])
     ];
     const lines = entries.map(entry => `/${entry}`);
     await fs_2.promises.appendFile(excludePath, `\n${lines.join('\n')}\n`, 'utf8');
@@ -84710,7 +84781,8 @@ async function excludeEphemeralFiles(workspace) {
         '--cached',
         '-f',
         '--ignore-unmatch',
-        '.autofix_task.md',
+        ...stageTaskEntries,
+        ...stageLogEntries,
         SUMMARY_FILENAME,
         '_diff.patch',
         '_issue_description.md',
@@ -84718,7 +84790,8 @@ async function excludeEphemeralFiles(workspace) {
         '_test.log',
         PR_TITLE_FILENAME,
         PR_BODY_FILENAME,
-        'scripts/autofix_repro.sh'
+        'scripts/autofix_repro.sh',
+        AGGREGATE_LOG_FILENAME
     ];
     await exec.exec('git', args, { cwd: workspace, ignoreReturnCode: true });
 }
@@ -84732,6 +84805,7 @@ async function createOrUpdatePullRequest(prTitle, prBody, inputs, workspace) {
     core.setSecret(token);
     await configureGitIdentity(workspace);
     await exec.exec('git', ['checkout', '-B', branchName], { cwd: workspace });
+    await removeAutofixPlanIfCodeChanges(workspace);
     await exec.exec('git', ['add', '--all'], { cwd: workspace });
     const status = await exec.getExecOutput('git', ['status', '--porcelain'], { cwd: workspace });
     if (!status.stdout.trim()) {
@@ -84806,13 +84880,15 @@ async function ensureLabels(octokit, owner, repo, issueNumber) {
 async function uploadArtifacts(itemCounter, workspace) {
     core.startGroup('Upload AutoFix artifacts');
     const artifactClient = new artifact_1.DefaultArtifactClient();
+    const stageLogs = STAGES.map(stage => stage.logFilename);
     const files = [
         SUMMARY_FILENAME,
         '_issue_description.md',
         '_diff.patch',
         '_lint.log',
         '_test.log',
-        'codex_exec.log',
+        AGGREGATE_LOG_FILENAME,
+        ...stageLogs,
         '_mcp_err.log',
         '_item_raw.json',
         'AUTOFIX_PLAN.md',
@@ -84837,17 +84913,20 @@ async function uploadArtifacts(itemCounter, workspace) {
 }
 async function cleanup(workspace) {
     core.startGroup('Cleanup');
+    const stageTaskEntries = STAGES.map(stage => stage.taskFilename);
+    const stageLogEntries = STAGES.map(stage => stage.logFilename);
     const pathsToRemove = [
         SUMMARY_FILENAME,
         '_item_raw.json',
         '_mcp_err.log',
         '.autofix_mcp',
         '.mcp.json',
-        '.autofix_task.md',
+        ...stageTaskEntries,
         '_lint.log',
         '_test.log',
         '_diff.patch',
-        'codex_exec.log',
+        AGGREGATE_LOG_FILENAME,
+        ...stageLogEntries,
         PR_TITLE_FILENAME,
         PR_BODY_FILENAME
     ];
@@ -84860,6 +84939,29 @@ async function cleanup(workspace) {
     core.endGroup();
 }
 void run();
+async function removeAutofixPlanIfCodeChanges(workspace) {
+    const planPath = path.join(workspace, 'AUTOFIX_PLAN.md');
+    if (!(0, fs_1.existsSync)(planPath)) {
+        return;
+    }
+    const statusOutput = await exec.getExecOutput('git', ['status', '--porcelain'], {
+        cwd: workspace
+    });
+    const lines = statusOutput.stdout
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean);
+    const hasPlanEntry = lines.some(line => line.includes('AUTOFIX_PLAN.md'));
+    const hasOtherChanges = lines.some(line => !line.includes('AUTOFIX_PLAN.md'));
+    if (hasPlanEntry && hasOtherChanges) {
+        core.info('Removing AUTOFIX_PLAN.md because code changes were produced.');
+        await io.rmRF(planPath);
+        await exec.exec('git', ['rm', '--cached', '--ignore-unmatch', 'AUTOFIX_PLAN.md'], {
+            cwd: workspace,
+            ignoreReturnCode: true
+        });
+    }
+}
 
 
 /***/ }),
