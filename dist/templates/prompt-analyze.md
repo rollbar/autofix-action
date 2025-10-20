@@ -20,7 +20,7 @@ Repository hints:
    - Explain how to reproduce the failure in production and in development.
    - Identify the impact and severity.
    - Clarify *why* the error occurs, including proximate and systemic causes.
-   - When describing the issue, wrap the markdown section between `=== ISSUE DESCRIPTION START ===` and `=== ISSUE DESCRIPTION END ===` so the workflow can extract it later.
+   - When describing the issue for `AUTOFIX_PLAN.md`, wrap the markdown section between `=== ISSUE DESCRIPTION START ===` and `=== ISSUE DESCRIPTION END ===` so the workflow can extract it later. Don't include these markers in `_pr_body.md`.
 2. **Generate fix alternatives (Step 2).**
    - For each root cause, propose one or more fixes.
    - Include effort estimates, expected code churn, pros/cons and tradeoffs in a markdown table.
