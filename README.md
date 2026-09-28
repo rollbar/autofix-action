@@ -1,3 +1,6 @@
+> [!NOTE]
+> This experimental repo has been archived. We recommend [Rollbar Resolve](https://rollbar.com/resolve) to automate error-to-PR.
+
 # Rollbar Autofix
 
 Automatically opens PRs to fix Rollbar errors using Codex and the Rollbar MCP server.
